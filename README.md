@@ -1,18 +1,21 @@
-# Metric Learning using Siamese Networks on LFW Dataset
+# Metric Learning & Generative AI
+## Tasks:
 > Training Siamese Network on Labeled Faces in the Wild (LFW) Dataset
+
+> Training a generative model for generating face images, using a GAN.
 
 ### Instructions:
 1. Clone the repository using:
     ```bash
-    git clone https://github.com/munish30monga/Siamese_LFW
+    git clone https://github.com/munish30monga/Metric_Learning-Generative_AI
    ```
 2. Navigate to the project directory: 
    ```bash
-    cd Siamese_LFW
+    cd Metric_Learning-Generative_AI
    ```
 3. Download the [dataset](http://vis-www.cs.umass.edu/lfw/) and paste the extracted folder inside the `dataset` directory:
    ```bash
-   Siamese_LFW/dataset/lfw/(folders_here)
+   Metric_Learning-Generative_AI/dataset/lfw/(folders_here)
    ```
 4. Install the requirements using: 
     ```bash
