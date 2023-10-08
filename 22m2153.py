@@ -24,8 +24,7 @@ from sklearn.metrics import accuracy_score, classification_report   # for model 
 import timm                                                         # for pretrained models
 import albumentations as A                                          # for image augmentations
 from albumentations.pytorch import ToTensorV2                       # for image augmentations
-from itertools import combinations                                  # for combinations
-from random import sample                                           # for sampling
+from itertools import combinations                                  # for combinations                                         # for sampling
 from prettytable import PrettyTable                                 # for table formatting
 import copy                                                         # for copying objects   
 import argparse                                                     # for command line arguments
@@ -78,7 +77,7 @@ def split_data(persons_dict):
     person_names = list(persons_dict.keys())
     
     # Split into 70% for training and 30% for validation + test
-    train_persons, remaining_persons = train_test_split(person_names, test_size=0.3, random_state=42)
+    train_persons, remaining_persons = train_test_split(person_names, test_size=0.2, random_state=42)
     
     # Split the remaining 30% equally into validation and test sets
     valid_persons, test_persons = train_test_split(remaining_persons, test_size=0.5, random_state=42)
@@ -90,7 +89,7 @@ def split_data(persons_dict):
     
     return train_persons_dict, valid_persons_dict, test_persons_dict
 
-def generate_pairs(persons_dict, data_dir, max_positive_combinations=7):
+def generate_pairs(persons_dict, data_dir, max_positive_combinations=30):
     """
     Generates pairs of images (both positive and negative) for Siamese training.
     
@@ -115,23 +114,28 @@ def generate_pairs(persons_dict, data_dir, max_positive_combinations=7):
         # Generate positive pairs
         if len(images) >= 2:
             all_combinations = list(combinations(images, 2))
-            selected_combinations = sample(all_combinations, min(max_positive_combinations, len(all_combinations)))
+            selected_combinations = random.sample(all_combinations, min(max_positive_combinations, len(all_combinations)))
             for img1, img2 in selected_combinations:
                 X.append([img1, img2])
                 Y.append(1.0)  # Same person
                 positive_pairs_count += 1
 
         # Generate negative pairs
-        other_person = random.choice(person_names[:idx] + person_names[idx+1:])
-        other_person_dir = data_dir / other_person
-        other_person_images = list(other_person_dir.glob("*.jpg"))
-
-        if len(images) > 0 and len(other_person_images) > 0:
-            img1 = random.choice(images)
-            img2 = random.choice(other_person_images)
-            X.append([img1, img2])
-            Y.append(0.0)  # Different persons
-            negative_pairs_count += 1
+        other_persons = [p for p in person_names if p != person]
+        
+        for _ in range(2):  # for creating two negative pairs
+            if len(images) > 0 and len(other_persons) > 0:
+                other_person = random.choice(other_persons)
+                other_person_dir = data_dir / other_person
+                other_person_images = list(other_person_dir.glob("*.jpg"))
+                
+                if other_person_images:
+                    img1 = random.choice(images)
+                    img2 = random.choice(other_person_images)
+                    X.append([img1, img2])
+                    Y.append(0.0)  # Different persons
+                    negative_pairs_count += 1
+                    other_persons.remove(other_person)  # So that next negative pair is from a different person
 
     return X, Y, positive_pairs_count, negative_pairs_count
 
@@ -436,8 +440,8 @@ def apply_augmentations(same_transform=True):
             ToTensorV2()
         ])
         return base_transform, transform2
-    
-def train_model(model, train_loader, valid_loader, num_epochs, learning_rate, loss_function, margin, patience=0, lr_scheduler=None, weight_decay=0, optimizer_type="Adam", apply_augmentation=False):
+
+def train_model(model, train_loader, valid_loader, num_epochs, learning_rate, loss_function, margin, threshold, patience=0, lr_scheduler=None, weight_decay=0, optimizer_type="Adam", apply_augmentation=False):
     """
     Training Loop for Siamese network model.
 
@@ -466,6 +470,7 @@ def train_model(model, train_loader, valid_loader, num_epochs, learning_rate, lo
     scheduler = choose_lr_scheduler(lr_scheduler, optimizer, num_epochs)
 
     train_losses, valid_losses = [], []
+    train_accuracies, valid_accuracies = [], []
     best_valid_loss = float('inf')
     epochs_without_improvement = 0
     
@@ -475,6 +480,8 @@ def train_model(model, train_loader, valid_loader, num_epochs, learning_rate, lo
     for epoch in range(1, num_epochs+1):
         model.train()
         running_train_loss = 0.0
+        correct_train_predictions = 0  # Track correct training predictions
+        total_train_samples = 0
         pbar = tqdm(train_loader, total=len(train_loader), leave=False)
         
         for _, (pairs, labels) in enumerate(pbar):
@@ -502,6 +509,9 @@ def train_model(model, train_loader, valid_loader, num_epochs, learning_rate, lo
             
             # Using cosine similarity
             similarity = F.cosine_similarity(output1, output2)
+            preds = (similarity > threshold).float()  # Use threshold of 0.5 for predictions
+            correct_train_predictions += (preds == labels).sum().item()  # Compute correct predictions
+            total_train_samples += labels.size(0)
             
             if loss_function == "BCE":
                 loss = criterion(similarity, labels)
@@ -517,11 +527,15 @@ def train_model(model, train_loader, valid_loader, num_epochs, learning_rate, lo
             pbar.set_postfix(train_loss=loss.item())
         
         avg_train_loss = running_train_loss / len(train_loader)
+        train_accuracy = correct_train_predictions / total_train_samples
         train_losses.append(avg_train_loss)
+        train_accuracies.append(train_accuracy)
         
         # Validation
         model.eval()
         running_valid_loss = 0.0
+        correct_valid_predictions = 0  # Track correct validation predictions
+        total_valid_samples = 0
         
         for _, (pairs, labels) in enumerate(valid_loader):
             input1, input2 = pairs[0].to(device), pairs[1].to(device)
@@ -530,6 +544,9 @@ def train_model(model, train_loader, valid_loader, num_epochs, learning_rate, lo
             with torch.no_grad():
                 output1, output2 = model(input1, input2)
                 similarity = F.cosine_similarity(output1, output2)
+                preds = (similarity > threshold).float()  # Use threshold of 0.5 for predictions
+                correct_valid_predictions += (preds == labels).sum().item()  # Compute correct predictions
+                total_valid_samples += labels.size(0)
                 
                 if loss_function == "hinge_loss":
                     hinge_labels = 2*labels - 1
@@ -540,7 +557,9 @@ def train_model(model, train_loader, valid_loader, num_epochs, learning_rate, lo
                 running_valid_loss += loss.item()
         
         avg_valid_loss = running_valid_loss / len(valid_loader)
+        valid_accuracy = correct_valid_predictions / total_valid_samples 
         valid_losses.append(avg_valid_loss)
+        valid_accuracies.append(valid_accuracy)
         
         # Learning Rate Scheduling
         if scheduler:
@@ -569,7 +588,7 @@ def train_model(model, train_loader, valid_loader, num_epochs, learning_rate, lo
 Epoch: [{epoch}/{num_epochs}] | Epoch Train Loss: {avg_train_loss} | Epoch Valid Loss: {avg_valid_loss}
 {"#"*100}''')
             
-    return model, train_losses, valid_losses
+    return model, train_losses, valid_losses, train_accuracies, valid_accuracies
 
 def plot_losses(train_losses, valid_losses, title):
     """
@@ -594,40 +613,95 @@ def plot_losses(train_losses, valid_losses, title):
     plt.tight_layout()
     plt.show()
     
+# def evaluate_model(model, dataloader, threshold):
+#     """
+#     Evaluate the Siamese network model on given dataloader.
+
+#     Args:
+#     - model (nn.Module): The trained Siamese network model.
+#     - dataloader (DataLoader): DataLoader for evaluation data.
+#     - threshold (float): Threshold for cosine similarity to make binary predictions.
+
+#     Returns:
+#     - avg_accuracy (float): Average accuracy on the dataloader.
+#     - class_report (str): Classification report with precision, recall, etc.
+#     """
+#     model = model.to(device)
+#     model.eval()
+    
+#     total_samples = 0
+#     correct_predictions = 0
+#     all_preds = []
+#     all_labels = []
+    
+#     for _, (pairs, labels) in enumerate(dataloader):
+#         input1, input2 = pairs[0].to(device), pairs[1].to(device)
+#         labels = labels.to(device).float()
+        
+#         with torch.no_grad():
+#             output1, output2 = model(input1, input2)
+#             similarity = F.cosine_similarity(output1, output2)
+#             preds = (similarity > threshold).float()  # Use threshold for predictions
+#             correct_predictions += (preds == labels).sum().item()
+#             total_samples += labels.size(0)
+            
+#             # Store predictions and labels for classification report
+#             all_preds.extend(preds.cpu().numpy())
+#             all_labels.extend(labels.cpu().numpy())
+    
+#     avg_accuracy = correct_predictions / total_samples
+#     class_report = classification_report(all_labels, all_preds, target_names=["Dissimilar", "Similar"])
+    
+#     return avg_accuracy, class_report
+
 def evaluate_model(model, dataloader, threshold):
     """
-    Evaluates the model's performance on a given dataset.
+    Evaluate the Siamese network model on given dataloader.
 
     Args:
     - model (nn.Module): The trained Siamese network model.
-    - dataloader (DataLoader): DataLoader for the dataset to evaluate.
-    - threshold (float, optional): Threshold for determining similarity. Defaults to 1.0.
-    - loss_function (str): The type of loss function to be used - 'contrastive' or 'BCE'.
+    - dataloader (DataLoader): DataLoader for evaluation data.
+    - threshold (float): Threshold for cosine similarity to make binary predictions.
 
     Returns:
-    - accuracy (float): Accuracy of the model on the dataset.
+    - avg_accuracy (float): Average accuracy on the dataloader.
+    - class_report (dict): Classification report with precision, recall, etc.
     """
-    model.eval()
     model = model.to(device)
+    model.eval()
     
-    all_actual_labels = []
-    all_predicted_labels = []
-
-    with torch.no_grad():
-        for pairs, actual_labels in dataloader:
-            input1, input2 = pairs[0].to(device), pairs[1].to(device)
+    TP, FP, FN, TN = 0, 0, 0, 0
+    
+    for _, (pairs, labels) in enumerate(dataloader):
+        input1, input2 = pairs[0].to(device), pairs[1].to(device)
+        labels = labels.to(device).float()
+        
+        with torch.no_grad():
             output1, output2 = model(input1, input2)
-            
             similarity = F.cosine_similarity(output1, output2)
+            preds = (similarity > threshold).float()  # Use threshold for predictions
             
-            # Predicting based on threshold
-            predicted_labels = (similarity > threshold).cpu().numpy().astype(float)
-            
-            all_actual_labels.extend(actual_labels.numpy())
-            all_predicted_labels.extend(predicted_labels)
-
-    accuracy = accuracy_score(all_actual_labels, all_predicted_labels)
-    return accuracy
+            # Update TP, FP, FN, TN values
+            TP += ((preds == 1) & (labels == 1)).sum().item()
+            FP += ((preds == 1) & (labels == 0)).sum().item()
+            FN += ((preds == 0) & (labels == 1)).sum().item()
+            TN += ((preds == 0) & (labels == 0)).sum().item()
+    
+    # Compute precision, recall for each class
+    precision_similar = TP / (TP + FP) if TP + FP != 0 else 0
+    recall_similar = TP / (TP + FN) if TP + FN != 0 else 0
+    
+    precision_dissimilar = TN / (TN + FN) if TN + FN != 0 else 0
+    recall_dissimilar = TN / (TN + FP) if TN + FP != 0 else 0
+    
+    avg_accuracy = (TP + TN) / (TP + FP + FN + TN)
+    
+    class_report = {
+        "Similar": {"Precision": precision_similar, "Recall": recall_similar},
+        "Dissimilar": {"Precision": precision_dissimilar, "Recall": recall_dissimilar}
+    }
+    
+    return avg_accuracy, class_report
 
 def display_predictions(model, dataloader, threshold, title):
     model.eval()
@@ -676,14 +750,14 @@ def main(**kwargs):
     hyperparameters = {
     'batch_size': 128,
     'random_seed': 42,
-    'epochs': 10,
+    'epochs': 20,
     'learning_rate': 0.01,
     'base_model': 'resnet18',
     'margin': 1.0,
-    'threshold': 1,
-    'max_positive_combinations': 7,
+    'threshold': 0.5,
+    'max_positive_combinations': 30,
     'loss_function': 'BCE',
-    'patience': 4,
+    'patience': 0,
     'lr_scheduler': None, # 'CosineAnnealingLR', 'ExponentialLR', 'ReduceLROnPlateau'
     'optimizer_type': 'Adam', # 'Adam', 'Adagrad', 'RMSprop'
     'weight_decay': 0,
@@ -742,7 +816,7 @@ def main(**kwargs):
     model = SiameseNetwork(base_model=hyperparameters['base_model'])
     
     # Train model
-    trained_model, train_losses, valid_losses = train_model(
+    trained_model, train_losses, valid_losses, train_accuracies, valid_accuracies = train_model(
         model, 
         train_loader, 
         valid_loader, 
@@ -750,20 +824,18 @@ def main(**kwargs):
         hyperparameters['learning_rate'],
         hyperparameters['loss_function'],
         hyperparameters['margin'],
+        hyperparameters['threshold'],
         patience=hyperparameters['patience'],
         lr_scheduler=hyperparameters['lr_scheduler'],
         weight_decay=hyperparameters['weight_decay'],
         optimizer_type=hyperparameters['optimizer_type'],
         apply_augmentation=hyperparameters['apply_augmentation']
     )
-    
-    # Evaluate model
-    train_accuracy = evaluate_model(trained_model, train_loader, threshold=hyperparameters['threshold'])
-    print(f"Train Accuracy with '{hyperparameters['base_model']}' base: {train_accuracy*100:.2f}%")
-    valid_accuracy = evaluate_model(trained_model, valid_loader, threshold=hyperparameters['threshold'])
-    print(f"Validation Accuracy with '{hyperparameters['base_model']}' base: {valid_accuracy*100:.2f}%")
-    test_accuracy = evaluate_model(trained_model, test_loader, threshold=hyperparameters['threshold'])
+    print(f"Avergae Training Accuracy with '{hyperparameters['base_model']}' base: {np.mean(train_accuracies)*100:.2f}%")
+    print(f"Avergae Validation Accuracy with '{hyperparameters['base_model']}' base: {np.mean(valid_accuracies)*100:.2f}%")
+    test_accuracy, class_report = evaluate_model(trained_model, test_loader, threshold=hyperparameters['threshold'])
     print(f"Test Accuracy with '{hyperparameters['base_model']}' base: {test_accuracy*100:.2f}%")
+    print(f"Classification Report:\n{class_report}")
     
     # Optionally plot losses
     if hyperparameters['plot_losses']:
@@ -780,14 +852,14 @@ if __name__ == "__main__":
     # Model Hyperparameters
     parser.add_argument('--batch_size', type=int, default=128, help='Batch size for training and validation.')
     parser.add_argument('--random_seed', type=int, default=42, help='Random seed for reproducibility.')
-    parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs.')
+    parser.add_argument('--epochs', type=int, default=20, help='Number of training epochs.')
     parser.add_argument('--learning_rate', type=float, default=0.01, help='Learning rate for the optimizer.')
     parser.add_argument('--base_model', type=str, default='resnet18', choices=['resnet18', 'resnet50', 'efficientnet-b0'], help='Base model for Siamese Network.')
     parser.add_argument('--margin', type=float, default=1.0, help='Margin for contrastive loss.')
-    parser.add_argument('--threshold', type=float, default=1, help='Threshold for similarity prediction.')
-    parser.add_argument('--max_positive_combinations', type=int, default=7, help='Maximum number of positive combinations per person.')
+    parser.add_argument('--threshold', type=float, default=0.5, help='Threshold for similarity prediction.')
+    parser.add_argument('--max_positive_combinations', type=int, default=30, help='Maximum number of positive combinations per person.')
     parser.add_argument('--loss_function', type=str, default='BCE', choices=['BCE', 'hinge_loss'], help='Loss function to use for training.')
-    parser.add_argument('--patience', type=int, default=4, help='Patience for early stopping.')
+    parser.add_argument('--patience', type=int, default=0, help='Patience for early stopping.')
     parser.add_argument('--lr_scheduler', type=str, default=None, choices=[None, 'CosineAnnealingLR', 'ExponentialLR', 'ReduceLROnPlateau'], help='Learning rate scheduler.')
     parser.add_argument('--optimizer_type', type=str, default='Adam', choices=['Adam', 'Adagrad', 'RMSprop'], help='Optimizer type.')
     parser.add_argument('--weight_decay', type=float, default=0, help='Weight decay for the optimizer.')
