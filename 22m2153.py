@@ -62,6 +62,89 @@ def visualize_dataset(persons_dict):
     plt.tight_layout()
     plt.show()
     
+def visualize_pairs(X, Y):
+    """
+    Visualizes pairs of images from X along with their label from Y.
+
+    Args:
+    - X (list): List of image pairs.
+    - Y (list): List of labels.
+    """
+    fig, axes = plt.subplots(4, 4, figsize=(15, 5*4))
+    
+    pos_idx = [i for i, label in enumerate(Y) if label == 1.0]
+    neg_idx = [i for i, label in enumerate(Y) if label == 0.0]
+
+    for row in range(4):
+        # Display positive pairs
+        img_path1, img_path2 = X[pos_idx[row]]
+        image1 = Image.open(img_path1)
+        image2 = Image.open(img_path2)
+        person1_name = img_path1.parent.name  # Assuming the parent directory is the person's name
+        person2_name = img_path2.parent.name
+        
+        axes[row, 0].imshow(np.array(image1), cmap='gray')
+        axes[row, 0].axis('off')
+        axes[row, 0].set_title(person1_name, fontsize = 18)
+
+        axes[row, 1].imshow(np.array(image2), cmap='gray')
+        axes[row, 1].axis('off')
+        axes[row, 1].set_title(person2_name, fontsize = 18)
+
+        # Display negative pairs
+        img_path1, img_path2 = X[neg_idx[row]]
+        image1 = Image.open(img_path1)
+        image2 = Image.open(img_path2)
+        person1_name = img_path1.parent.name  # Assuming the parent directory is the person's name
+        person2_name = img_path2.parent.name
+
+        axes[row, 2].imshow(np.array(image1), cmap='gray')
+        axes[row, 2].axis('off')
+        axes[row, 2].set_title(person1_name, fontsize = 18)
+
+        axes[row, 3].imshow(np.array(image2), cmap='gray')
+        axes[row, 3].axis('off')
+        axes[row, 3].set_title(person2_name, fontsize = 18)
+
+    # Setting main titles for Positive and Negative pairs
+    fig.text(0.25, 1, 'Positive Pairs', ha='center', va='center', fontsize=24)
+    fig.text(0.75, 1, 'Negative Pairs', ha='center', va='center', fontsize=24)
+    
+    plt.tight_layout()
+    plt.show()
+
+def visualize_batch(dataloader, num_samples=4):
+    # Fetch one batch of data
+    (img1_batch, img2_batch), labels_batch = next(iter(dataloader))
+    
+    # Randomly sample indices for visualization
+    indices = random.sample(range(len(labels_batch)), num_samples)
+    
+    fig, axes = plt.subplots(num_samples, 2, figsize=(12, 4 * num_samples))
+    
+    for i, idx in enumerate(indices):
+        # Image 1 from the pair
+        img1 = img1_batch[idx].permute(1, 2, 0).numpy()
+        # Image 2 from the pair
+        img2 = img2_batch[idx].permute(1, 2, 0).numpy()
+        
+        axes[i, 0].imshow(img1, cmap='gray')
+        axes[i, 0].axis('off')
+        
+        axes[i, 1].imshow(img2, cmap='gray')
+        axes[i, 1].axis('off')
+        
+        if labels_batch[idx] == 1.0:
+            label = "Positive Pair"
+        else:
+            label = "Negative Pair"
+        
+        # Place the label to the left of the images in vertical fashion
+        fig.text(0.1, (num_samples - i - 0.5) / num_samples, label, ha='center', va='center', fontsize=14, rotation=90)
+    
+    plt.tight_layout()
+    plt.show()
+    
 def split_data(persons_dict):
     """
     Split persons data for training a Siamese network.
@@ -138,57 +221,6 @@ def generate_pairs(persons_dict, data_dir, max_positive_combinations=30):
                     other_persons.remove(other_person)  # So that next negative pair is from a different person
 
     return X, Y, positive_pairs_count, negative_pairs_count
-
-def visualize_pairs(X, Y):
-    """
-    Visualizes pairs of images from X along with their label from Y.
-
-    Args:
-    - X (list): List of image pairs.
-    - Y (list): List of labels.
-    """
-    fig, axes = plt.subplots(4, 4, figsize=(15, 5*4))
-    
-    pos_idx = [i for i, label in enumerate(Y) if label == 1.0]
-    neg_idx = [i for i, label in enumerate(Y) if label == 0.0]
-
-    for row in range(4):
-        # Display positive pairs
-        img_path1, img_path2 = X[pos_idx[row]]
-        image1 = Image.open(img_path1)
-        image2 = Image.open(img_path2)
-        person1_name = img_path1.parent.name  # Assuming the parent directory is the person's name
-        person2_name = img_path2.parent.name
-        
-        axes[row, 0].imshow(np.array(image1), cmap='gray')
-        axes[row, 0].axis('off')
-        axes[row, 0].set_title(person1_name, fontsize = 18)
-
-        axes[row, 1].imshow(np.array(image2), cmap='gray')
-        axes[row, 1].axis('off')
-        axes[row, 1].set_title(person2_name, fontsize = 18)
-
-        # Display negative pairs
-        img_path1, img_path2 = X[neg_idx[row]]
-        image1 = Image.open(img_path1)
-        image2 = Image.open(img_path2)
-        person1_name = img_path1.parent.name  # Assuming the parent directory is the person's name
-        person2_name = img_path2.parent.name
-
-        axes[row, 2].imshow(np.array(image1), cmap='gray')
-        axes[row, 2].axis('off')
-        axes[row, 2].set_title(person1_name, fontsize = 18)
-
-        axes[row, 3].imshow(np.array(image2), cmap='gray')
-        axes[row, 3].axis('off')
-        axes[row, 3].set_title(person2_name, fontsize = 18)
-
-    # Setting main titles for Positive and Negative pairs
-    fig.text(0.25, 1, 'Positive Pairs', ha='center', va='center', fontsize=24)
-    fig.text(0.75, 1, 'Negative Pairs', ha='center', va='center', fontsize=24)
-    
-    plt.tight_layout()
-    plt.show()
     
 def preprocess_data(X):
     """
@@ -238,7 +270,6 @@ def dict_to_tensors(persons_dict, data_dir, max_positive_combinations=7):
     Y_tensor = torch.tensor(Y, dtype=torch.float32)
 
     return X_tensor, Y_tensor
-
 class SiameseDataset(Dataset):
     """
     Dataset class for Siamese networks.
@@ -270,39 +301,7 @@ class SiameseDataset(Dataset):
         img2 = self.X[index, 1]
         label = self.Y[index]
         return (img1, img2), label
-    
-def visualize_batch(dataloader, num_samples=4):
-    # Fetch one batch of data
-    (img1_batch, img2_batch), labels_batch = next(iter(dataloader))
-    
-    # Randomly sample indices for visualization
-    indices = random.sample(range(len(labels_batch)), num_samples)
-    
-    fig, axes = plt.subplots(num_samples, 2, figsize=(12, 4 * num_samples))
-    
-    for i, idx in enumerate(indices):
-        # Image 1 from the pair
-        img1 = img1_batch[idx].permute(1, 2, 0).numpy()
-        # Image 2 from the pair
-        img2 = img2_batch[idx].permute(1, 2, 0).numpy()
         
-        axes[i, 0].imshow(img1, cmap='gray')
-        axes[i, 0].axis('off')
-        
-        axes[i, 1].imshow(img2, cmap='gray')
-        axes[i, 1].axis('off')
-        
-        if labels_batch[idx] == 1.0:
-            label = "Positive Pair"
-        else:
-            label = "Negative Pair"
-        
-        # Place the label to the left of the images in vertical fashion
-        fig.text(0.1, (num_samples - i - 0.5) / num_samples, label, ha='center', va='center', fontsize=14, rotation=90)
-    
-    plt.tight_layout()
-    plt.show()
-    
 # class SiameseNetwork(nn.Module):
 #     """
 #     Siamese Neural Network for learning embeddings using pairs of images. 
@@ -454,38 +453,6 @@ def choose_lr_scheduler(lr_scheduler, optimizer, num_epochs):
     else:
         scheduler = None
     return scheduler
-
-# def apply_augmentations(same_transform=True):
-#     """
-#     Get a pair of transformation functions for data augmentation using albumentations.
-    
-#     Args:
-#     - same_transform (bool): If true, applies the same transformation to both images in the pair.
-    
-#     Returns:
-#     - tuple: A pair of transformation functions.
-#     """
-    
-#     # Base transformations that can be applied to any image
-#     base_transform = A.Compose([
-#         A.RandomResizedCrop(height=224, width=224, scale=(0.7, 1.0)),
-#         A.Rotate(limit=15),
-#         A.ColorJitter(brightness=0.5, contrast=0.5),
-#         A.HorizontalFlip(),
-#         A.CoarseDropout(max_holes=8, max_height=25, max_width=25, fill_value=0, p=0.5),
-#         ToTensorV2()
-#     ])
-    
-#     if same_transform:
-#         return base_transform, base_transform
-#     else:
-#         transform2 = A.Compose([
-#             A.ColorJitter(brightness=0.5, contrast=0.5),
-#             A.HorizontalFlip(),
-#             A.CoarseDropout(max_holes=8, max_height=25, max_width=25, fill_value=0, p=0.5),
-#             ToTensorV2()
-#         ])
-#         return base_transform, transform2
 
 def apply_augmentations(same_transform=True):
     """
