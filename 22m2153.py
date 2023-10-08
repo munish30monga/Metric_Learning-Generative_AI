@@ -20,7 +20,6 @@ from torchvision.transforms import CenterCrop                       # for croppi
 from torch.utils.data import Dataset, DataLoader                    # for dataset handling
 import torchvision.models as models                                 # for getting pretrained models
 from tqdm import tqdm                                               # for progress bar
-from sklearn.metrics import accuracy_score, classification_report   # for model evaluation
 import timm                                                         # for pretrained models
 import albumentations as A                                          # for image augmentations
 from albumentations.pytorch import ToTensorV2                       # for image augmentations
@@ -28,6 +27,7 @@ from itertools import combinations                                  # for combin
 from prettytable import PrettyTable                                 # for table formatting
 import copy                                                         # for copying objects   
 import argparse                                                     # for command line arguments
+from sklearn.metrics import classification_report                   # for model evaluation
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu' 
 
@@ -303,6 +303,63 @@ def visualize_batch(dataloader, num_samples=4):
     plt.tight_layout()
     plt.show()
     
+# class SiameseNetwork(nn.Module):
+#     """
+#     Siamese Neural Network for learning embeddings using pairs of images. 
+
+#     Attributes:
+#     - base_model (nn.Module): The base model used for feature extraction.
+#     - embedding_size (int): Size of the embedding produced by the base model.
+#     - projection (nn.Linear): Linear layer to project embeddings to desired size (512).
+
+#     Methods:
+#     - forward_one(x): Computes the embedding for a single input image.
+#     - forward(input1, input2): Computes the embeddings for a pair of input images.
+#     """
+#     def __init__(self, base_model):
+#         """
+#         Initializes the SiameseNetwork with a given base model.
+
+#         Args:
+#         - base_model (str): Name of the base model to use. Options are "resnet18", "resnet50", "vgg16", "efficientnet-b0", and "efficientnet-b7".
+#         """
+#         super(SiameseNetwork, self).__init__()
+        
+#         if base_model == "resnet18":
+#             self.base_model = models.resnet18(weights="ResNet18_Weights.DEFAULT")
+#             self.base_model = nn.Sequential(*list(self.base_model.children())[:-1])
+#             self.embedding_size = 512  # For ResNet-18
+
+#         elif base_model == "resnet50":
+#             self.base_model = models.resnet50(weights="ResNet50_Weights.DEFAULT")
+#             self.base_model = nn.Sequential(*list(self.base_model.children())[:-1])
+#             self.embedding_size = 2048  # For ResNet-50
+
+#         elif base_model == "efficientnet-b0":
+#             self.base_model = timm.create_model('efficientnet_b0', pretrained=True)
+#             # Remove the classification head
+#             self.base_model = nn.Sequential(*list(self.base_model.children())[:-1])
+#             self.embedding_size = 1280  # For EfficientNet-B0
+
+#         else:
+#             raise ValueError(f"Unrecognized base_model: {base_model}")
+
+#         # Projection layer to get embeddings of size 512
+#         self.projection = nn.Linear(self.embedding_size, 512)
+
+#     def forward_once(self, x):
+#         # Forward pass for one input
+#         x = self.base_model(x)
+#         x = x.view(x.size()[0], -1)
+#         x = self.projection(x)
+#         return x
+
+#     def forward(self, input1, input2):
+#         # Forward pass for both inputs
+#         output1 = self.forward_once(input1)
+#         output2 = self.forward_once(input2)
+#         return output1, output2
+
 class SiameseNetwork(nn.Module):
     """
     Siamese Neural Network for learning embeddings using pairs of images. 
@@ -325,25 +382,15 @@ class SiameseNetwork(nn.Module):
         """
         super(SiameseNetwork, self).__init__()
         
-        if base_model == "resnet18":
-            self.base_model = models.resnet18(weights="ResNet18_Weights.DEFAULT")
-            self.base_model = nn.Sequential(*list(self.base_model.children())[:-1])
-            self.embedding_size = 512  # For ResNet-18
-
-        elif base_model == "resnet50":
-            self.base_model = models.resnet50(weights="ResNet50_Weights.DEFAULT")
-            self.base_model = nn.Sequential(*list(self.base_model.children())[:-1])
-            self.embedding_size = 2048  # For ResNet-50
-
-        elif base_model == "efficientnet-b0":
-            self.base_model = timm.create_model('efficientnet_b0', pretrained=True)
-            # Remove the classification head
-            self.base_model = nn.Sequential(*list(self.base_model.children())[:-1])
-            self.embedding_size = 1280  # For EfficientNet-B0
-
-        else:
-            raise ValueError(f"Unrecognized base_model: {base_model}")
-
+        # Create the model
+        self.base_model = timm.create_model(base_model, pretrained=True)
+        
+        # Get the number of features (embedding size) from the base model
+        self.embedding_size = self.base_model.num_features
+        
+        # Remove the classification head
+        self.base_model = nn.Sequential(*list(self.base_model.children())[:-1])
+        
         # Projection layer to get embeddings of size 512
         self.projection = nn.Linear(self.embedding_size, 512)
 
@@ -408,6 +455,38 @@ def choose_lr_scheduler(lr_scheduler, optimizer, num_epochs):
         scheduler = None
     return scheduler
 
+# def apply_augmentations(same_transform=True):
+#     """
+#     Get a pair of transformation functions for data augmentation using albumentations.
+    
+#     Args:
+#     - same_transform (bool): If true, applies the same transformation to both images in the pair.
+    
+#     Returns:
+#     - tuple: A pair of transformation functions.
+#     """
+    
+#     # Base transformations that can be applied to any image
+#     base_transform = A.Compose([
+#         A.RandomResizedCrop(height=224, width=224, scale=(0.7, 1.0)),
+#         A.Rotate(limit=15),
+#         A.ColorJitter(brightness=0.5, contrast=0.5),
+#         A.HorizontalFlip(),
+#         A.CoarseDropout(max_holes=8, max_height=25, max_width=25, fill_value=0, p=0.5),
+#         ToTensorV2()
+#     ])
+    
+#     if same_transform:
+#         return base_transform, base_transform
+#     else:
+#         transform2 = A.Compose([
+#             A.ColorJitter(brightness=0.5, contrast=0.5),
+#             A.HorizontalFlip(),
+#             A.CoarseDropout(max_holes=8, max_height=25, max_width=25, fill_value=0, p=0.5),
+#             ToTensorV2()
+#         ])
+#         return base_transform, transform2
+
 def apply_augmentations(same_transform=True):
     """
     Get a pair of transformation functions for data augmentation using albumentations.
@@ -421,10 +500,14 @@ def apply_augmentations(same_transform=True):
     
     # Base transformations that can be applied to any image
     base_transform = A.Compose([
-        A.RandomResizedCrop(height=224, width=224, scale=(0.7, 1.0)),
+        # A.RandomResizedCrop(height=224, width=224, scale=(0.7, 1.0)),
         A.Rotate(limit=15),
         A.ColorJitter(brightness=0.5, contrast=0.5),
         A.HorizontalFlip(),
+        A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
+        A.GaussianBlur(blur_limit=(3, 7), p=0.5),
+        A.RandomRotate90(),
+        A.ToGray(p=0.5),
         A.CoarseDropout(max_holes=8, max_height=25, max_width=25, fill_value=0, p=0.5),
         ToTensorV2()
     ])
@@ -433,9 +516,12 @@ def apply_augmentations(same_transform=True):
         return base_transform, base_transform
     else:
         transform2 = A.Compose([
-            # A.RandomAffine(degrees=15, translate_percent=(0.2, 0.2), scale=(0.7, 1.3), shear=15),
             A.ColorJitter(brightness=0.5, contrast=0.5),
             A.HorizontalFlip(),
+            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
+            A.GaussianBlur(blur_limit=(3, 7), p=0.5),
+            A.RandomRotate90(),
+            A.ToGray(p=0.5),
             A.CoarseDropout(max_holes=8, max_height=25, max_width=25, fill_value=0, p=0.5),
             ToTensorV2()
         ])
@@ -613,47 +699,6 @@ def plot_losses(train_losses, valid_losses, title):
     plt.tight_layout()
     plt.show()
     
-# def evaluate_model(model, dataloader, threshold):
-#     """
-#     Evaluate the Siamese network model on given dataloader.
-
-#     Args:
-#     - model (nn.Module): The trained Siamese network model.
-#     - dataloader (DataLoader): DataLoader for evaluation data.
-#     - threshold (float): Threshold for cosine similarity to make binary predictions.
-
-#     Returns:
-#     - avg_accuracy (float): Average accuracy on the dataloader.
-#     - class_report (str): Classification report with precision, recall, etc.
-#     """
-#     model = model.to(device)
-#     model.eval()
-    
-#     total_samples = 0
-#     correct_predictions = 0
-#     all_preds = []
-#     all_labels = []
-    
-#     for _, (pairs, labels) in enumerate(dataloader):
-#         input1, input2 = pairs[0].to(device), pairs[1].to(device)
-#         labels = labels.to(device).float()
-        
-#         with torch.no_grad():
-#             output1, output2 = model(input1, input2)
-#             similarity = F.cosine_similarity(output1, output2)
-#             preds = (similarity > threshold).float()  # Use threshold for predictions
-#             correct_predictions += (preds == labels).sum().item()
-#             total_samples += labels.size(0)
-            
-#             # Store predictions and labels for classification report
-#             all_preds.extend(preds.cpu().numpy())
-#             all_labels.extend(labels.cpu().numpy())
-    
-#     avg_accuracy = correct_predictions / total_samples
-#     class_report = classification_report(all_labels, all_preds, target_names=["Dissimilar", "Similar"])
-    
-#     return avg_accuracy, class_report
-
 def evaluate_model(model, dataloader, threshold):
     """
     Evaluate the Siamese network model on given dataloader.
@@ -665,12 +710,15 @@ def evaluate_model(model, dataloader, threshold):
 
     Returns:
     - avg_accuracy (float): Average accuracy on the dataloader.
-    - class_report (dict): Classification report with precision, recall, etc.
+    - class_report (str): Classification report with precision, recall, etc.
     """
     model = model.to(device)
     model.eval()
     
-    TP, FP, FN, TN = 0, 0, 0, 0
+    total_samples = 0
+    correct_predictions = 0
+    all_preds = []
+    all_labels = []
     
     for _, (pairs, labels) in enumerate(dataloader):
         input1, input2 = pairs[0].to(device), pairs[1].to(device)
@@ -680,26 +728,15 @@ def evaluate_model(model, dataloader, threshold):
             output1, output2 = model(input1, input2)
             similarity = F.cosine_similarity(output1, output2)
             preds = (similarity > threshold).float()  # Use threshold for predictions
+            correct_predictions += (preds == labels).sum().item()
+            total_samples += labels.size(0)
             
-            # Update TP, FP, FN, TN values
-            TP += ((preds == 1) & (labels == 1)).sum().item()
-            FP += ((preds == 1) & (labels == 0)).sum().item()
-            FN += ((preds == 0) & (labels == 1)).sum().item()
-            TN += ((preds == 0) & (labels == 0)).sum().item()
+            # Store predictions and labels for classification report
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
     
-    # Compute precision, recall for each class
-    precision_similar = TP / (TP + FP) if TP + FP != 0 else 0
-    recall_similar = TP / (TP + FN) if TP + FN != 0 else 0
-    
-    precision_dissimilar = TN / (TN + FN) if TN + FN != 0 else 0
-    recall_dissimilar = TN / (TN + FP) if TN + FP != 0 else 0
-    
-    avg_accuracy = (TP + TN) / (TP + FP + FN + TN)
-    
-    class_report = {
-        "Similar": {"Precision": precision_similar, "Recall": recall_similar},
-        "Dissimilar": {"Precision": precision_dissimilar, "Recall": recall_dissimilar}
-    }
+    avg_accuracy = correct_predictions / total_samples
+    class_report = classification_report(all_labels, all_preds, target_names=["Dissimilar", "Similar"])
     
     return avg_accuracy, class_report
 
@@ -854,7 +891,7 @@ if __name__ == "__main__":
     parser.add_argument('--random_seed', type=int, default=42, help='Random seed for reproducibility.')
     parser.add_argument('--epochs', type=int, default=20, help='Number of training epochs.')
     parser.add_argument('--learning_rate', type=float, default=0.01, help='Learning rate for the optimizer.')
-    parser.add_argument('--base_model', type=str, default='resnet18', choices=['resnet18', 'resnet50', 'efficientnet-b0'], help='Base model for Siamese Network.')
+    parser.add_argument('--base_model', type=str, default='resnet18', help='Base model for Siamese Network.')
     parser.add_argument('--margin', type=float, default=1.0, help='Margin for contrastive loss.')
     parser.add_argument('--threshold', type=float, default=0.5, help='Threshold for similarity prediction.')
     parser.add_argument('--max_positive_combinations', type=int, default=30, help='Maximum number of positive combinations per person.')
