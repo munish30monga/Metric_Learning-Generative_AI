@@ -423,7 +423,9 @@ class SiameseNetwork(nn.Module):
                     param.requires_grad = True
         
         # Projection layer to get embeddings of size 512
-        self.projection = nn.Linear(self.embedding_size, 512)
+        self.projection = nn.Sequential(
+            nn.Linear(self.embedding_size, 512),
+            nn.BatchNorm1d(512))
 
     def forward_once(self, x):
         # Forward pass for one input
@@ -460,8 +462,8 @@ class ContrastiveLoss(nn.Module):
 
     def forward(self, output1, output2, label):
         euclidean_distance = F.pairwise_distance(output1, output2)
-        loss = torch.mean((label) * torch.pow(euclidean_distance, 2) +
-                          (1-label) * torch.pow(torch.clamp(self.margin - euclidean_distance, min=0.0), 2))
+        loss = torch.mean((1-label) * torch.pow(euclidean_distance, 2) +
+                          (label) * torch.pow(torch.clamp(self.margin - euclidean_distance, min=0.0), 2))
         return loss
 
 # def choose_loss_function(loss_function, margin):
@@ -600,7 +602,7 @@ def train_model(model, train_loader, valid_loader, num_epochs, learning_rate, lo
                 hinge_labels = 2*labels - 1
                 loss = criterion(similarity, hinge_labels, torch.ones_like(labels))
             elif loss_function == "contrastive":
-                loss = criterion(output1, output2, labels)
+                loss = criterion(output1, output2, 1-labels)
 
             running_train_loss += loss.item()
             loss.backward()
@@ -642,7 +644,7 @@ def train_model(model, train_loader, valid_loader, num_epochs, learning_rate, lo
                     hinge_labels = 2*labels - 1
                     loss = criterion(similarity, hinge_labels, torch.ones_like(labels))
                 elif loss_function == "contrastive":
-                    loss = criterion(output1, output2, labels)
+                    loss = criterion(output1, output2, 1-labels)
 
                 running_valid_loss += loss.item()
         
