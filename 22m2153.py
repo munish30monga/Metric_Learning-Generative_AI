@@ -18,7 +18,6 @@ import torch                                                        # for deep l
 from torchvision import transforms                                  # for image transformations
 from torchvision.transforms import CenterCrop                       # for cropping images
 from torch.utils.data import Dataset, DataLoader                    # for dataset handling
-import torchvision.models as models                                 # for getting pretrained models
 from tqdm import tqdm                                               # for progress bar
 import timm                                                         # for pretrained models
 import albumentations as A                                          # for image augmentations
@@ -28,6 +27,8 @@ from prettytable import PrettyTable                                 # for table 
 import copy                                                         # for copying objects   
 import argparse                                                     # for command line arguments
 from sklearn.metrics import classification_report                   # for model evaluation
+import shutil                                                       # for file handling
+import torchvision.transforms as T                                  # for image transformations
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu' 
 
@@ -74,6 +75,10 @@ def visualize_pairs(X, Y):
     
     pos_idx = [i for i, label in enumerate(Y) if label == 1.0]
     neg_idx = [i for i, label in enumerate(Y) if label == 0.0]
+
+    # Shuffle the indices
+    random.shuffle(pos_idx)
+    random.shuffle(neg_idx)
 
     for row in range(4):
         # Display positive pairs
@@ -172,7 +177,52 @@ def split_data(persons_dict):
     
     return train_persons_dict, valid_persons_dict, test_persons_dict
 
-def generate_pairs(persons_dict, data_dir, max_positive_combinations=30):
+def generate_positive_pairs(persons_dict, num_augmentations=5):
+    transforms = A.Compose([
+        A.Rotate(limit=15),
+        A.ColorJitter(brightness=0.5, contrast=0.5),
+        A.HorizontalFlip(),
+        A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
+        A.GaussianBlur(blur_limit=(3, 7), p=0.5),
+        A.RandomRotate90(),
+        A.ToGray(p=0.5),
+        A.CoarseDropout(max_holes=8, max_height=25, max_width=25, fill_value=0, p=0.5),
+        ToTensorV2()
+    ])
+    data_dir = pl.Path('./dataset/lfw/')
+    augmented_dataset_dir = pl.Path('./augmented_dataset/')
+    
+    # Remove the existing directory and its contents
+    if augmented_dataset_dir.exists():
+        shutil.rmtree(augmented_dataset_dir)
+    
+    # Recreate the directory
+    augmented_dataset_dir.mkdir(parents=True, exist_ok=True)
+    
+    person_names = list(persons_dict.keys())
+    augmented_persons_count = 0
+    total_augmented_images = 0
+    
+    for idx, person in enumerate(person_names):
+        person_dir = data_dir / person
+        images = list(person_dir.glob("*.jpg"))
+        
+        if len(images) == 1:
+            augmented_persons_count += 1
+            person_augmented_dir = augmented_dataset_dir / person
+            person_augmented_dir.mkdir(parents=True, exist_ok=True)
+            
+            for i in range(num_augmentations):
+                augmented_image_tensor = transforms(image=np.array(Image.open(images[0])))["image"]
+                # Convert tensor back to PIL Image
+                augmented_image = T.ToPILImage()(augmented_image_tensor)
+                image_path = person_augmented_dir / f"augmented_{i}.jpg"
+                augmented_image.save(image_path)
+                total_augmented_images += 1
+
+    print(f"Total number of augmented images generated = Augmented Persons x Augmentations per person = {augmented_persons_count} x {num_augmentations} = {total_augmented_images}")
+    
+def generate_pairs(persons_dict, max_positive_combinations, apply_augmentation, num_augmentations):
     """
     Generates pairs of images (both positive and negative) for Siamese training.
     
@@ -188,37 +238,68 @@ def generate_pairs(persons_dict, data_dir, max_positive_combinations=30):
     X, Y = [], []
     person_names = list(persons_dict.keys())
     
+    data_dir = pl.Path('./dataset/lfw/')
+    augmented_data_dir = pl.Path('./augmented_dataset/')
+    
     positive_pairs_count, negative_pairs_count = 0, 0
-
+    
+    if apply_augmentation:
+        print("Generating augmented images...")
+        generate_positive_pairs(persons_dict, num_augmentations)
+        
     for idx, person in enumerate(person_names):
         person_dir = data_dir / person
         images = list(person_dir.glob("*.jpg"))
-
-        # Generate positive pairs
+            
+        # Generate positive pairs for original images
         if len(images) >= 2:
             all_combinations = list(combinations(images, 2))
             selected_combinations = random.sample(all_combinations, min(max_positive_combinations, len(all_combinations)))
+            
             for img1, img2 in selected_combinations:
                 X.append([img1, img2])
                 Y.append(1.0)  # Same person
                 positive_pairs_count += 1
 
-        # Generate negative pairs
-        other_persons = [p for p in person_names if p != person]
-        
-        for _ in range(2):  # for creating two negative pairs
-            if len(images) > 0 and len(other_persons) > 0:
-                other_person = random.choice(other_persons)
-                other_person_dir = data_dir / other_person
-                other_person_images = list(other_person_dir.glob("*.jpg"))
-                
-                if other_person_images:
-                    img1 = random.choice(images)
-                    img2 = random.choice(other_person_images)
-                    X.append([img1, img2])
-                    Y.append(0.0)  # Different persons
-                    negative_pairs_count += 1
-                    other_persons.remove(other_person)  # So that next negative pair is from a different person
+                # Generate a negative pair for every positive pair
+                other_persons = [p for p in person_names if p != person]
+                if other_persons:
+                    other_person = random.choice(other_persons)
+                    other_person_dir = data_dir / other_person
+                    other_person_images = list(other_person_dir.glob("*.jpg"))
+                    
+                    if other_person_images:
+                        img1_neg = random.choice(images)
+                        img2_neg = random.choice(other_person_images)
+                        X.append([img1_neg, img2_neg])
+                        Y.append(0.0)  # Different persons
+                        negative_pairs_count += 1
+                        
+        # Generate positive pairs for augmented images
+        if len(images) == 1 and apply_augmentation:
+            person_augmented_dir = augmented_data_dir / person
+            augmented_images = list(person_augmented_dir.glob("*.jpg"))
+            
+            for img1 in images:  # This will loop only once since len(images) == 1
+                for img2 in augmented_images:
+                    X.append([img1, img2])  # Pairing original image with each augmented image
+                    Y.append(1.0)  # Same person using augmented images
+                    positive_pairs_count += 1
+
+                    # Generate a negative pair for every positive pair
+                    other_persons = [p for p in person_names if p != person]
+                    if other_persons:
+                        other_person = random.choice(other_persons)
+                        other_person_dir = data_dir / other_person
+                        other_person_images = list(other_person_dir.glob("*.jpg"))
+
+                        if other_person_images:
+                            img1_neg = img1
+                            img2_neg = random.choice(other_person_images)
+                            X.append([img1_neg, img2_neg])
+                            Y.append(0.0)  # Different persons
+                            negative_pairs_count += 1
+
 
     return X, Y, positive_pairs_count, negative_pairs_count
     
@@ -241,7 +322,7 @@ def preprocess_data(X):
 
     return X_processed
 
-def dict_to_tensors(persons_dict, data_dir, max_positive_combinations=7):
+def dict_to_tensors(persons_dict, max_positive_combinations, apply_augmentation, num_augmentations):
     """
     Converts a dictionary of persons into tensors of image pairs and labels.
 
@@ -252,7 +333,7 @@ def dict_to_tensors(persons_dict, data_dir, max_positive_combinations=7):
     - X_tensor (torch.Tensor): Tensor of image pairs.
     - Y_tensor (torch.Tensor): Tensor of labels.
     """
-    X, Y,_,_ = generate_pairs(persons_dict, data_dir, max_positive_combinations=max_positive_combinations)
+    X, Y,_,_ = generate_pairs(persons_dict, max_positive_combinations, apply_augmentation=apply_augmentation, num_augmentations=num_augmentations)
     
     # Preprocess the data (apply center cropping)
     X = preprocess_data(X)
@@ -301,64 +382,6 @@ class SiameseDataset(Dataset):
         img2 = self.X[index, 1]
         label = self.Y[index]
         return (img1, img2), label
-        
-# class SiameseNetwork(nn.Module):
-#     """
-#     Siamese Neural Network for learning embeddings using pairs of images. 
-
-#     Attributes:
-#     - base_model (nn.Module): The base model used for feature extraction.
-#     - embedding_size (int): Size of the embedding produced by the base model.
-#     - projection (nn.Linear): Linear layer to project embeddings to desired size (512).
-
-#     Methods:
-#     - forward_one(x): Computes the embedding for a single input image.
-#     - forward(input1, input2): Computes the embeddings for a pair of input images.
-#     """
-#     def __init__(self, base_model):
-#         """
-#         Initializes the SiameseNetwork with a given base model.
-
-#         Args:
-#         - base_model (str): Name of the base model to use. Options are "resnet18", "resnet50", "vgg16", "efficientnet-b0", and "efficientnet-b7".
-#         """
-#         super(SiameseNetwork, self).__init__()
-        
-#         if base_model == "resnet18":
-#             self.base_model = models.resnet18(weights="ResNet18_Weights.DEFAULT")
-#             self.base_model = nn.Sequential(*list(self.base_model.children())[:-1])
-#             self.embedding_size = 512  # For ResNet-18
-
-#         elif base_model == "resnet50":
-#             self.base_model = models.resnet50(weights="ResNet50_Weights.DEFAULT")
-#             self.base_model = nn.Sequential(*list(self.base_model.children())[:-1])
-#             self.embedding_size = 2048  # For ResNet-50
-
-#         elif base_model == "efficientnet-b0":
-#             self.base_model = timm.create_model('efficientnet_b0', pretrained=True)
-#             # Remove the classification head
-#             self.base_model = nn.Sequential(*list(self.base_model.children())[:-1])
-#             self.embedding_size = 1280  # For EfficientNet-B0
-
-#         else:
-#             raise ValueError(f"Unrecognized base_model: {base_model}")
-
-#         # Projection layer to get embeddings of size 512
-#         self.projection = nn.Linear(self.embedding_size, 512)
-
-#     def forward_once(self, x):
-#         # Forward pass for one input
-#         x = self.base_model(x)
-#         x = x.view(x.size()[0], -1)
-#         x = self.projection(x)
-#         return x
-
-#     def forward(self, input1, input2):
-#         # Forward pass for both inputs
-#         output1 = self.forward_once(input1)
-#         output2 = self.forward_once(input2)
-#         return output1, output2
-
 class SiameseNetwork(nn.Module):
     """
     Siamese Neural Network for learning embeddings using pairs of images. 
@@ -367,17 +390,19 @@ class SiameseNetwork(nn.Module):
     - base_model (nn.Module): The base model used for feature extraction.
     - embedding_size (int): Size of the embedding produced by the base model.
     - projection (nn.Linear): Linear layer to project embeddings to desired size (512).
+    
 
     Methods:
     - forward_one(x): Computes the embedding for a single input image.
     - forward(input1, input2): Computes the embeddings for a pair of input images.
     """
-    def __init__(self, base_model):
+    def __init__(self, base_model, unfreeze_last_n):
         """
         Initializes the SiameseNetwork with a given base model.
 
         Args:
-        - base_model (str): Name of the base model to use. Options are "resnet18", "resnet50", "vgg16", "efficientnet-b0", and "efficientnet-b7".
+        - base_model (str): Name of the base model to use
+        - unfreeze_last_n (int): Number of layers to unfreeze from the end
         """
         super(SiameseNetwork, self).__init__()
         
@@ -389,6 +414,17 @@ class SiameseNetwork(nn.Module):
         
         # Remove the classification head
         self.base_model = nn.Sequential(*list(self.base_model.children())[:-1])
+
+        # Freeze all layers initially
+        for param in self.base_model.parameters():
+            param.requires_grad = False
+
+        # Unfreeze the last n layers
+        num_layers = len(list(self.base_model.children()))
+        for i, child in enumerate(self.base_model.children()):
+            if i >= num_layers - unfreeze_last_n:
+                for param in child.parameters():
+                    param.requires_grad = True
         
         # Projection layer to get embeddings of size 512
         self.projection = nn.Linear(self.embedding_size, 512)
@@ -454,47 +490,7 @@ def choose_lr_scheduler(lr_scheduler, optimizer, num_epochs):
         scheduler = None
     return scheduler
 
-def apply_augmentations(same_transform=True):
-    """
-    Get a pair of transformation functions for data augmentation using albumentations.
-    
-    Args:
-    - same_transform (bool): If true, applies the same transformation to both images in the pair.
-    
-    Returns:
-    - tuple: A pair of transformation functions.
-    """
-    
-    # Base transformations that can be applied to any image
-    base_transform = A.Compose([
-        # A.RandomResizedCrop(height=224, width=224, scale=(0.7, 1.0)),
-        A.Rotate(limit=15),
-        A.ColorJitter(brightness=0.5, contrast=0.5),
-        A.HorizontalFlip(),
-        A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
-        A.GaussianBlur(blur_limit=(3, 7), p=0.5),
-        A.RandomRotate90(),
-        A.ToGray(p=0.5),
-        A.CoarseDropout(max_holes=8, max_height=25, max_width=25, fill_value=0, p=0.5),
-        ToTensorV2()
-    ])
-    
-    if same_transform:
-        return base_transform, base_transform
-    else:
-        transform2 = A.Compose([
-            A.ColorJitter(brightness=0.5, contrast=0.5),
-            A.HorizontalFlip(),
-            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
-            A.GaussianBlur(blur_limit=(3, 7), p=0.5),
-            A.RandomRotate90(),
-            A.ToGray(p=0.5),
-            A.CoarseDropout(max_holes=8, max_height=25, max_width=25, fill_value=0, p=0.5),
-            ToTensorV2()
-        ])
-        return base_transform, transform2
-
-def train_model(model, train_loader, valid_loader, num_epochs, learning_rate, loss_function, margin, threshold, patience=0, lr_scheduler=None, weight_decay=0, optimizer_type="Adam", apply_augmentation=False):
+def train_model(model, train_loader, valid_loader, num_epochs, learning_rate, loss_function, margin, threshold, patience=0, lr_scheduler=None, weight_decay=0, optimizer_type="Adam"):
     """
     Training Loop for Siamese network model.
 
@@ -527,9 +523,6 @@ def train_model(model, train_loader, valid_loader, num_epochs, learning_rate, lo
     best_valid_loss = float('inf')
     epochs_without_improvement = 0
     
-    if apply_augmentation:
-        print("Using data augmentation...")
-    
     for epoch in range(1, num_epochs+1):
         model.train()
         running_train_loss = 0.0
@@ -538,23 +531,8 @@ def train_model(model, train_loader, valid_loader, num_epochs, learning_rate, lo
         pbar = tqdm(train_loader, total=len(train_loader), leave=False)
         
         for _, (pairs, labels) in enumerate(pbar):
-            if apply_augmentation:
-                batch_size = len(labels)
-                for i in range(batch_size):
-                    transform1, transform2 = apply_augmentations(same_transform=(labels[i] == 1))
             
-                # Convert tensors to numpy arrays for albumentations and apply transformations
-                input1_np = pairs[0].numpy().transpose(0, 2, 3, 1)  # Convert to HWC format
-                input2_np = pairs[1].numpy().transpose(0, 2, 3, 1)
-
-                transformed1 = [transform1(image=img)["image"] for img in input1_np]
-                transformed2 = [transform2(image=img)["image"] for img in input2_np]
-
-                # Convert transformed images back to tensors and send to device
-                input1 = torch.stack(transformed1).to(device)
-                input2 = torch.stack(transformed2).to(device)
-            else:
-                input1, input2 = pairs[0].to(device), pairs[1].to(device)
+            input1, input2 = pairs[0].to(device), pairs[1].to(device)
             labels = labels.to(device).float()
             
             optimizer.zero_grad()
@@ -766,6 +744,8 @@ def main(**kwargs):
     'optimizer_type': 'Adam', # 'Adam', 'Adagrad', 'RMSprop'
     'weight_decay': 0,
     'apply_augmentation': True,
+    'unfreeze_last_n': 0,
+    'num_augmentations': 1,
     'print_tables': True,
     'plot_losses': True,
     'display_predictions': True,
@@ -787,13 +767,13 @@ def main(**kwargs):
     persons_with_mul_imgs_dict = {person: num_images for person, num_images in all_persons_dict.items() if num_images > 1} 
 
     train_persons_dict, valid_persons_dict, test_persons_dict = split_data(all_persons_dict)
-    X_train_pairs, Y_train_pairs, positive_pairs_count_train, negative_pairs_count_train = generate_pairs(train_persons_dict, data_dir, max_positive_combinations=hyperparameters['max_positive_combinations'])
-    X_valid_pairs, Y_valid_pairs, positive_pairs_count_valid, negative_pairs_count_valid = generate_pairs(valid_persons_dict, data_dir, max_positive_combinations=hyperparameters['max_positive_combinations'])
-    X_test_pairs, Y_test_pairs, positive_pairs_count_test, negative_pairs_count_test = generate_pairs(test_persons_dict, data_dir, max_positive_combinations=hyperparameters['max_positive_combinations'])
-    
-    X_train, Y_train = dict_to_tensors(train_persons_dict, data_dir, max_positive_combinations=hyperparameters['max_positive_combinations'])
-    X_valid, Y_valid = dict_to_tensors(valid_persons_dict, data_dir,  max_positive_combinations=hyperparameters['max_positive_combinations'])
-    X_test, Y_test = dict_to_tensors(test_persons_dict, data_dir, max_positive_combinations=hyperparameters['max_positive_combinations'])
+    X_train_pairs, Y_train_pairs, positive_pairs_count_train, negative_pairs_count_train = generate_pairs(train_persons_dict, max_positive_combinations=hyperparameters['max_positive_combinations'], apply_augmentation=hyperparameters['apply_augmentation'], num_augmentations=hyperparameters['num_augmentations'])
+    X_valid_pairs, Y_valid_pairs, positive_pairs_count_valid, negative_pairs_count_valid = generate_pairs(valid_persons_dict, max_positive_combinations=hyperparameters['max_positive_combinations'], apply_augmentation=False, num_augmentations=0)
+    X_test_pairs, Y_test_pairs, positive_pairs_count_test, negative_pairs_count_test = generate_pairs(test_persons_dict, max_positive_combinations=hyperparameters['max_positive_combinations'], apply_augmentation=False, num_augmentations=0)
+
+    X_train, Y_train = dict_to_tensors(train_persons_dict, max_positive_combinations=hyperparameters['max_positive_combinations'], apply_augmentation=hyperparameters['apply_augmentation'], num_augmentations=hyperparameters['num_augmentations'])
+    X_valid, Y_valid = dict_to_tensors(valid_persons_dict, max_positive_combinations=hyperparameters['max_positive_combinations'], apply_augmentation=False, num_augmentations=0)
+    X_test, Y_test = dict_to_tensors(test_persons_dict, max_positive_combinations=hyperparameters['max_positive_combinations'], apply_augmentation=False, num_augmentations=0)
     
     train_dataset = SiameseDataset(X_train, Y_train)
     valid_dataset = SiameseDataset(X_valid, Y_valid)
@@ -817,7 +797,7 @@ def main(**kwargs):
      
     print(f"Training Siamese Network with '{hyperparameters['base_model']}' base...")     
     # Initialize model
-    model = SiameseNetwork(base_model=hyperparameters['base_model'])
+    model = SiameseNetwork(base_model=hyperparameters['base_model'], unfreeze_last_n=hyperparameters['unfreeze_last_n'])
     
     # Train model
     trained_model, train_losses, valid_losses, train_accuracies, valid_accuracies = train_model(
@@ -833,12 +813,15 @@ def main(**kwargs):
         lr_scheduler=hyperparameters['lr_scheduler'],
         weight_decay=hyperparameters['weight_decay'],
         optimizer_type=hyperparameters['optimizer_type'],
-        apply_augmentation=hyperparameters['apply_augmentation']
     )
-    print(f"Avergae Training Accuracy with '{hyperparameters['base_model']}' base: {np.mean(train_accuracies)*100:.2f}%")
-    print(f"Avergae Validation Accuracy with '{hyperparameters['base_model']}' base: {np.mean(valid_accuracies)*100:.2f}%")
     test_accuracy, class_report = evaluate_model(trained_model, test_loader, threshold=hyperparameters['threshold'])
-    print(f"Test Accuracy with '{hyperparameters['base_model']}' base: {test_accuracy*100:.2f}%")
+    accuracy_table = PrettyTable()
+    accuracy_table.title = f"Model Performance with '{hyperparameters['base_model']}' base"
+    accuracy_table.field_names = ["Split", "Accuracy (%)"]
+    accuracy_table.add_row(["Training", f"{np.mean(train_accuracies)*100:.2f}"])
+    accuracy_table.add_row(["Validation", f"{np.mean(valid_accuracies)*100:.2f}"])
+    accuracy_table.add_row(["Test", f"{test_accuracy*100:.2f}"])
+    print(accuracy_table)
     print(f"Classification Report:\n{class_report}")
     
     # Optionally plot losses
@@ -856,12 +839,12 @@ if __name__ == "__main__":
     # Model Hyperparameters
     parser.add_argument('--batch_size', type=int, default=128, help='Batch size for training and validation.')
     parser.add_argument('--random_seed', type=int, default=42, help='Random seed for reproducibility.')
-    parser.add_argument('--epochs', type=int, default=20, help='Number of training epochs.')
+    parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs.')
     parser.add_argument('--learning_rate', type=float, default=0.01, help='Learning rate for the optimizer.')
     parser.add_argument('--base_model', type=str, default='resnet18', help='Base model for Siamese Network.')
     parser.add_argument('--margin', type=float, default=1.0, help='Margin for contrastive loss.')
     parser.add_argument('--threshold', type=float, default=0.5, help='Threshold for similarity prediction.')
-    parser.add_argument('--max_positive_combinations', type=int, default=30, help='Maximum number of positive combinations per person.')
+    parser.add_argument('--max_positive_combinations', type=int, default=1, help='Maximum number of positive combinations per person.')
     parser.add_argument('--loss_function', type=str, default='BCE', choices=['BCE', 'hinge_loss'], help='Loss function to use for training.')
     parser.add_argument('--patience', type=int, default=0, help='Patience for early stopping.')
     parser.add_argument('--lr_scheduler', type=str, default=None, choices=[None, 'CosineAnnealingLR', 'ExponentialLR', 'ReduceLROnPlateau'], help='Learning rate scheduler.')
@@ -869,7 +852,9 @@ if __name__ == "__main__":
     parser.add_argument('--weight_decay', type=float, default=0, help='Weight decay for the optimizer.')
     parser.add_argument('--apply_augmentation', type=bool, default=False, help='Whether to apply data augmentation or not.')
     parser.add_argument('--print_tables', type=bool, default=False, help='Flag to print tables.')
-
+    parser.add_argument('--num_augmentations', type=int, default=1, help='Number of augmented images to generate per image.')
+    parser.add_argument('--unfreeze_last_n', type=int, default=0, help='Number of layers to unfreeze from the end.')
+    
     # Visualization arguments
     parser.add_argument('--plot_losses', type=bool, default=False, help='Flag to plot training and validation losses.')
     parser.add_argument('--display_predictions', type=bool, default=False, help='Flag to display predictions on validation and test sets.')
