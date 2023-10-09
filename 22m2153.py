@@ -242,11 +242,7 @@ def generate_pairs(persons_dict, max_positive_combinations, apply_augmentation, 
     augmented_data_dir = pl.Path('./augmented_dataset/')
     
     positive_pairs_count, negative_pairs_count = 0, 0
-    
-    if apply_augmentation:
-        print("Generating augmented images...")
-        generate_positive_pairs(persons_dict, num_augmentations)
-        
+            
     for idx, person in enumerate(person_names):
         person_dir = data_dir / person
         images = list(person_dir.glob("*.jpg"))
@@ -442,12 +438,58 @@ class SiameseNetwork(nn.Module):
         output2 = self.forward_once(input2)
         return output1, output2
 
+class ContrastiveLoss(nn.Module):
+    """
+    Contrastive loss for Siamese networks.
+
+    Attributes:
+    - margin (float): Margin for the contrastive loss.
+
+    Methods:
+    - forward(output1, output2, label): Computes the contrastive loss given a pair of embeddings and their label.
+    """
+    def __init__(self, margin=2.0):
+        """
+        Initializes the ContrastiveLoss with a given margin.
+
+        Args:
+        - margin (float): Margin for the contrastive loss.
+        """
+        super(ContrastiveLoss, self).__init__()
+        self.margin = margin
+
+    def forward(self, output1, output2, label):
+        euclidean_distance = F.pairwise_distance(output1, output2)
+        loss = torch.mean((label) * torch.pow(euclidean_distance, 2) +
+                          (1-label) * torch.pow(torch.clamp(self.margin - euclidean_distance, min=0.0), 2))
+        return loss
+
+# def choose_loss_function(loss_function, margin):
+#     """
+#     Chooses the loss function based on the given name.
+
+#     Args:
+#     - loss_function (str): Name of the loss function. Options are "BCE" and "hinge_loss".
+
+#     Returns:
+#     - loss_function (nn.Module): The loss function.
+#     """
+#     if loss_function == "BCE":
+#         criterion = torch.nn.BCEWithLogitsLoss()
+#         print("Using Cross Entropy Loss...")
+#     elif loss_function == "hinge_loss":
+#         criterion = torch.nn.MarginRankingLoss(margin=margin)
+#         print(f"Using Hinge Loss with margin={margin}...")
+#     else:
+#         raise ValueError("Invalid loss_function!")
+#     return criterion
+
 def choose_loss_function(loss_function, margin):
     """
     Chooses the loss function based on the given name.
 
     Args:
-    - loss_function (str): Name of the loss function. Options are "BCE" and "hinge_loss".
+    - loss_function (str): Name of the loss function. Options are "BCE", "hinge_loss", and "contrastive".
 
     Returns:
     - loss_function (nn.Module): The loss function.
@@ -458,6 +500,9 @@ def choose_loss_function(loss_function, margin):
     elif loss_function == "hinge_loss":
         criterion = torch.nn.MarginRankingLoss(margin=margin)
         print(f"Using Hinge Loss with margin={margin}...")
+    elif loss_function == "contrastive":
+        criterion = ContrastiveLoss(margin=margin)
+        print(f"Using Contrastive Loss with margin={margin}...")
     else:
         raise ValueError("Invalid loss_function!")
     return criterion
@@ -539,18 +584,24 @@ def train_model(model, train_loader, valid_loader, num_epochs, learning_rate, lo
             output1, output2 = model(input1, input2)
             
             # Using cosine similarity
-            similarity = F.cosine_similarity(output1, output2)
-            preds = (similarity > threshold).float()  # Use threshold of 0.5 for predictions
+            if loss_function == "contrastive":
+                distance = F.pairwise_distance(output1, output2)
+                preds = (distance < threshold).float()  # Use threshold for predictions based on distance
+            else:
+                similarity = F.cosine_similarity(output1, output2)
+                preds = (similarity > threshold).float()  # Use threshold for predictions based on similarity
+
             correct_train_predictions += (preds == labels).sum().item()  # Compute correct predictions
             total_train_samples += labels.size(0)
             
             if loss_function == "BCE":
                 loss = criterion(similarity, labels)
             elif loss_function == "hinge_loss":
-                # +1 if labels are 1 (similar) and -1 if labels are 0 (dissimilar)
                 hinge_labels = 2*labels - 1
                 loss = criterion(similarity, hinge_labels, torch.ones_like(labels))
-            
+            elif loss_function == "contrastive":
+                loss = criterion(output1, output2, labels)
+
             running_train_loss += loss.item()
             loss.backward()
             optimizer.step()
@@ -574,17 +625,25 @@ def train_model(model, train_loader, valid_loader, num_epochs, learning_rate, lo
             
             with torch.no_grad():
                 output1, output2 = model(input1, input2)
-                similarity = F.cosine_similarity(output1, output2)
-                preds = (similarity > threshold).float()  # Use threshold of 0.5 for predictions
+                
+                if loss_function == "contrastive":
+                    distance = F.pairwise_distance(output1, output2)
+                    preds = (distance < threshold).float()  # Use threshold for predictions based on distance
+                else:
+                    similarity = F.cosine_similarity(output1, output2)
+                    preds = (similarity > threshold).float()  # Use threshold for predictions based on similarity
+
                 correct_valid_predictions += (preds == labels).sum().item()  # Compute correct predictions
                 total_valid_samples += labels.size(0)
                 
-                if loss_function == "hinge_loss":
+                if loss_function == "BCE":
+                    loss = criterion(similarity, labels)
+                elif loss_function == "hinge_loss":
                     hinge_labels = 2*labels - 1
                     loss = criterion(similarity, hinge_labels, torch.ones_like(labels))
-                else: # BCE
-                    loss = criterion(similarity, labels)
-                
+                elif loss_function == "contrastive":
+                    loss = criterion(output1, output2, labels)
+
                 running_valid_loss += loss.item()
         
         avg_valid_loss = running_valid_loss / len(valid_loader)
@@ -644,7 +703,7 @@ def plot_losses(train_losses, valid_losses, title):
     plt.tight_layout()
     plt.show()
     
-def evaluate_model(model, dataloader, threshold):
+def evaluate_model(model, dataloader, threshold, loss_function):
     """
     Evaluate the Siamese network model on given dataloader.
 
@@ -671,8 +730,13 @@ def evaluate_model(model, dataloader, threshold):
         
         with torch.no_grad():
             output1, output2 = model(input1, input2)
-            similarity = F.cosine_similarity(output1, output2)
-            preds = (similarity > threshold).float()  # Use threshold for predictions
+            if loss_function == "contrastive":
+                distance = F.pairwise_distance(output1, output2)
+                preds = (distance < threshold).float()  # Use threshold for predictions based on distance
+            else:
+                similarity = F.cosine_similarity(output1, output2)
+                preds = (similarity > threshold).float()  # Use threshold for predictions based on similarity
+
             correct_predictions += (preds == labels).sum().item()
             total_samples += labels.size(0)
             
@@ -767,6 +831,11 @@ def main(**kwargs):
     persons_with_mul_imgs_dict = {person: num_images for person, num_images in all_persons_dict.items() if num_images > 1} 
 
     train_persons_dict, valid_persons_dict, test_persons_dict = split_data(all_persons_dict)
+    
+    if hyperparameters['apply_augmentation']:
+        print("Generating augmented images...")
+        generate_positive_pairs(train_persons_dict, num_augmentations=hyperparameters['num_augmentations'])
+        
     X_train_pairs, Y_train_pairs, positive_pairs_count_train, negative_pairs_count_train = generate_pairs(train_persons_dict, max_positive_combinations=hyperparameters['max_positive_combinations'], apply_augmentation=hyperparameters['apply_augmentation'], num_augmentations=hyperparameters['num_augmentations'])
     X_valid_pairs, Y_valid_pairs, positive_pairs_count_valid, negative_pairs_count_valid = generate_pairs(valid_persons_dict, max_positive_combinations=hyperparameters['max_positive_combinations'], apply_augmentation=False, num_augmentations=0)
     X_test_pairs, Y_test_pairs, positive_pairs_count_test, negative_pairs_count_test = generate_pairs(test_persons_dict, max_positive_combinations=hyperparameters['max_positive_combinations'], apply_augmentation=False, num_augmentations=0)
@@ -814,7 +883,7 @@ def main(**kwargs):
         weight_decay=hyperparameters['weight_decay'],
         optimizer_type=hyperparameters['optimizer_type'],
     )
-    test_accuracy, class_report = evaluate_model(trained_model, test_loader, threshold=hyperparameters['threshold'])
+    test_accuracy, class_report = evaluate_model(trained_model, test_loader, threshold=hyperparameters['threshold'], loss_function = hyperparameters['loss_function'])
     accuracy_table = PrettyTable()
     accuracy_table.title = f"Model Performance with '{hyperparameters['base_model']}' base"
     accuracy_table.field_names = ["Split", "Accuracy (%)"]
@@ -837,7 +906,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Training Siamese Network')
 
     # Model Hyperparameters
-    parser.add_argument('--batch_size', type=int, default=128, help='Batch size for training and validation.')
+    parser.add_argument('--batch_size', type=int, default=64, help='Batch size for training and validation.')
     parser.add_argument('--random_seed', type=int, default=42, help='Random seed for reproducibility.')
     parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs.')
     parser.add_argument('--learning_rate', type=float, default=0.01, help='Learning rate for the optimizer.')
@@ -845,7 +914,7 @@ if __name__ == "__main__":
     parser.add_argument('--margin', type=float, default=1.0, help='Margin for contrastive loss.')
     parser.add_argument('--threshold', type=float, default=0.5, help='Threshold for similarity prediction.')
     parser.add_argument('--max_positive_combinations', type=int, default=1, help='Maximum number of positive combinations per person.')
-    parser.add_argument('--loss_function', type=str, default='BCE', choices=['BCE', 'hinge_loss'], help='Loss function to use for training.')
+    parser.add_argument('--loss_function', type=str, default='BCE', choices=['BCE', 'hinge_loss','contrastive'], help='Loss function to use for training.')
     parser.add_argument('--patience', type=int, default=0, help='Patience for early stopping.')
     parser.add_argument('--lr_scheduler', type=str, default=None, choices=[None, 'CosineAnnealingLR', 'ExponentialLR', 'ReduceLROnPlateau'], help='Learning rate scheduler.')
     parser.add_argument('--optimizer_type', type=str, default='Adam', choices=['Adam', 'Adagrad', 'RMSprop'], help='Optimizer type.')
