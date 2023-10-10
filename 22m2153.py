@@ -162,13 +162,17 @@ def split_data(persons_dict):
     - valid_persons_dict (dict): Dictionary for validation set.
     - test_persons_dict (dict): Dictionary for test set.
     """
-    person_names = list(persons_dict.keys())
+    single_image_persons = [person for person, count in persons_dict.items() if count == 1]
+    multi_image_persons = [person for person, count in persons_dict.items() if count > 1]
+
+    # Split the multi-image persons into 80% for training and 20% for validation + test
+    train_multi_persons, remaining_persons = train_test_split(multi_image_persons, test_size=0.2, random_state=42)
     
-    # Split into 70% for training and 30% for validation + test
-    train_persons, remaining_persons = train_test_split(person_names, test_size=0.2, random_state=42)
-    
-    # Split the remaining 30% equally into validation and test sets
+    # Split the remaining 20% equally into validation and test sets
     valid_persons, test_persons = train_test_split(remaining_persons, test_size=0.5, random_state=42)
+    
+    # Add single image persons to training set
+    train_persons = single_image_persons + train_multi_persons
     
     # Create dictionaries for each set
     train_persons_dict = {person: persons_dict[person] for person in train_persons}
@@ -179,13 +183,13 @@ def split_data(persons_dict):
 
 def generate_positive_pairs(persons_dict, num_augmentations=5):
     transforms = A.Compose([
-        A.Rotate(limit=15),
+        # A.Rotate(limit=15),
         A.ColorJitter(brightness=0.5, contrast=0.5),
         A.HorizontalFlip(),
         A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
         A.GaussianBlur(blur_limit=(3, 7), p=0.5),
-        A.RandomRotate90(),
-        A.ToGray(p=0.5),
+        # A.RandomRotate90(),
+        # A.ToGray(p=0.5),
         A.CoarseDropout(max_holes=8, max_height=25, max_width=25, fill_value=0, p=0.5),
         ToTensorV2()
     ])
@@ -386,7 +390,6 @@ class SiameseNetwork(nn.Module):
     - base_model (nn.Module): The base model used for feature extraction.
     - embedding_size (int): Size of the embedding produced by the base model.
     - projection (nn.Linear): Linear layer to project embeddings to desired size (512).
-    
 
     Methods:
     - forward_one(x): Computes the embedding for a single input image.
@@ -411,16 +414,21 @@ class SiameseNetwork(nn.Module):
         # Remove the classification head
         self.base_model = nn.Sequential(*list(self.base_model.children())[:-1])
 
-        # Freeze all layers initially
-        for param in self.base_model.parameters():
-            param.requires_grad = False
+        # If unfreeze_last_n is -1, make all layers trainable
+        if unfreeze_last_n == -1:
+            for param in self.base_model.parameters():
+                param.requires_grad = True
+        else:
+            # Freeze all layers initially
+            for param in self.base_model.parameters():
+                param.requires_grad = False
 
-        # Unfreeze the last n layers
-        num_layers = len(list(self.base_model.children()))
-        for i, child in enumerate(self.base_model.children()):
-            if i >= num_layers - unfreeze_last_n:
-                for param in child.parameters():
-                    param.requires_grad = True
+            # Unfreeze the last n layers
+            num_layers = len(list(self.base_model.children()))
+            for i, child in enumerate(self.base_model.children()):
+                if i >= num_layers - unfreeze_last_n:
+                    for param in child.parameters():
+                        param.requires_grad = True
         
         # Projection layer to get embeddings of size 512
         self.projection = nn.Sequential(
@@ -465,26 +473,6 @@ class ContrastiveLoss(nn.Module):
         loss = torch.mean((1-label) * torch.pow(euclidean_distance, 2) +
                           (label) * torch.pow(torch.clamp(self.margin - euclidean_distance, min=0.0), 2))
         return loss
-
-# def choose_loss_function(loss_function, margin):
-#     """
-#     Chooses the loss function based on the given name.
-
-#     Args:
-#     - loss_function (str): Name of the loss function. Options are "BCE" and "hinge_loss".
-
-#     Returns:
-#     - loss_function (nn.Module): The loss function.
-#     """
-#     if loss_function == "BCE":
-#         criterion = torch.nn.BCEWithLogitsLoss()
-#         print("Using Cross Entropy Loss...")
-#     elif loss_function == "hinge_loss":
-#         criterion = torch.nn.MarginRankingLoss(margin=margin)
-#         print(f"Using Hinge Loss with margin={margin}...")
-#     else:
-#         raise ValueError("Invalid loss_function!")
-#     return criterion
 
 def choose_loss_function(loss_function, margin):
     """
@@ -531,7 +519,7 @@ def choose_lr_scheduler(lr_scheduler, optimizer, num_epochs):
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
         print("Using ExponentialLR scheduler...")
     elif lr_scheduler == "ReduceLROnPlateau":
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, verbose=True)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=2, verbose=True)
         print("Using ReduceLROnPlateau scheduler...")
     else:
         scheduler = None
@@ -682,26 +670,37 @@ Epoch: [{epoch}/{num_epochs}] | Epoch Train Loss: {avg_train_loss} | Epoch Valid
             
     return model, train_losses, valid_losses, train_accuracies, valid_accuracies
 
-def plot_losses(train_losses, valid_losses, title):
+def plot_losses(train_losses, valid_losses, train_accuracies, valid_accuracies):
     """
-    Plots training and validation losses per epoch.
+    Plots training and validation losses and accuracies per epoch.
     
     Args:
     - train_losses (list): Training losses per epoch.
     - valid_losses (list): Validation losses per epoch.
-    - title (str): Title for the plot.
+    - train_accuracies (list): Training accuracies per epoch.
+    - valid_accuracies (list): Validation accuracies per epoch.
     """
-    epochs = range(1, len(train_losses) + 1)            # Create a list of epochs
-    fig, ax = plt.subplots(figsize=(8, 4))              # Create a figure and an axes
-    # Plotting train losses
-    plt.plot(epochs, train_losses, label='Training Loss', marker='o', color='blue')
-    # Plotting valid losses
-    plt.plot(epochs, valid_losses, label='Validation Loss', marker='o', color='red')
-    plt.title(title)
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.grid(True)
+    epochs = range(1, len(train_losses) + 1)  # Create a list of epochs
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))  # Create a figure and two axes
+
+    # Plotting train and valid losses on the left subplot
+    ax1.plot(epochs, train_losses, label='Training Loss', marker='o', color='blue')
+    ax1.plot(epochs, valid_losses, label='Validation Loss', marker='o', color='red')
+    ax1.set_title('Training & Validation Losses')
+    ax1.set_xlabel('Epochs')
+    ax1.set_ylabel('Loss')
+    ax1.legend()
+    ax1.grid(True)
+
+    # Plotting train and valid accuracies on the right subplot
+    ax2.plot(epochs, train_accuracies, label='Training Accuracy', marker='o', color='blue')
+    ax2.plot(epochs, valid_accuracies, label='Validation Accuracy', marker='o', color='red')
+    ax2.set_title('Training & Validation Accuracies')
+    ax2.set_xlabel('Epochs')
+    ax2.set_ylabel('Accuracy')
+    ax2.legend()
+    ax2.grid(True)
+
     plt.tight_layout()
     plt.show()
     
@@ -751,7 +750,7 @@ def evaluate_model(model, dataloader, threshold, loss_function):
     
     return avg_accuracy, class_report
 
-def display_predictions(model, dataloader, threshold, title):
+def display_predictions(model, dataloader, threshold, title, loss_function):
     model.eval()
     model = model.to(device)
     count = 0
@@ -766,10 +765,12 @@ def display_predictions(model, dataloader, threshold, title):
         input1, input2 = pairs[0].to(device), pairs[1].to(device)
         output1, output2 = model(input1, input2)
         
-        similarity = F.cosine_similarity(output1, output2).cpu().detach().numpy()
-        
-        # Predicting based on threshold
-        predicted_labels = (similarity > threshold).astype(float)
+        if loss_function == "contrastive":
+            distance = F.pairwise_distance(output1, output2).cpu().detach().numpy()
+            predicted_labels = (distance < threshold).astype(float)
+        else:
+            similarity = F.cosine_similarity(output1, output2).cpu().detach().numpy()
+            predicted_labels = (similarity > threshold).astype(float)
 
         for idx in range(len(predicted_labels)):
             # Setting the title with predicted and actual labels
@@ -796,7 +797,7 @@ def display_predictions(model, dataloader, threshold, title):
     
 def main(**kwargs):
     hyperparameters = {
-    'batch_size': 128,
+    'batch_size': 64,
     'random_seed': 42,
     'epochs': 20,
     'learning_rate': 0.01,
@@ -818,7 +819,7 @@ def main(**kwargs):
     'visualize_pairs': True
     }
     hyperparameters.update(kwargs)
-    print(f'{"#"*100}\nSiamese Network\n{"#"*100}')
+    print(f'{"#"*100}\nMetric Learning & Generative AI\n{"#"*100}')
     print(f"Hyperparameters: {hyperparameters}")
 
     # Override default hyperparameterss with provided arguments
@@ -839,12 +840,12 @@ def main(**kwargs):
         generate_positive_pairs(train_persons_dict, num_augmentations=hyperparameters['num_augmentations'])
         
     X_train_pairs, Y_train_pairs, positive_pairs_count_train, negative_pairs_count_train = generate_pairs(train_persons_dict, max_positive_combinations=hyperparameters['max_positive_combinations'], apply_augmentation=hyperparameters['apply_augmentation'], num_augmentations=hyperparameters['num_augmentations'])
-    X_valid_pairs, Y_valid_pairs, positive_pairs_count_valid, negative_pairs_count_valid = generate_pairs(valid_persons_dict, max_positive_combinations=hyperparameters['max_positive_combinations'], apply_augmentation=False, num_augmentations=0)
-    X_test_pairs, Y_test_pairs, positive_pairs_count_test, negative_pairs_count_test = generate_pairs(test_persons_dict, max_positive_combinations=hyperparameters['max_positive_combinations'], apply_augmentation=False, num_augmentations=0)
+    X_valid_pairs, Y_valid_pairs, positive_pairs_count_valid, negative_pairs_count_valid = generate_pairs(valid_persons_dict, max_positive_combinations=1, apply_augmentation=False, num_augmentations=0)
+    X_test_pairs, Y_test_pairs, positive_pairs_count_test, negative_pairs_count_test = generate_pairs(test_persons_dict, max_positive_combinations=1, apply_augmentation=False, num_augmentations=0)
 
     X_train, Y_train = dict_to_tensors(train_persons_dict, max_positive_combinations=hyperparameters['max_positive_combinations'], apply_augmentation=hyperparameters['apply_augmentation'], num_augmentations=hyperparameters['num_augmentations'])
-    X_valid, Y_valid = dict_to_tensors(valid_persons_dict, max_positive_combinations=hyperparameters['max_positive_combinations'], apply_augmentation=False, num_augmentations=0)
-    X_test, Y_test = dict_to_tensors(test_persons_dict, max_positive_combinations=hyperparameters['max_positive_combinations'], apply_augmentation=False, num_augmentations=0)
+    X_valid, Y_valid = dict_to_tensors(valid_persons_dict, max_positive_combinations=1, apply_augmentation=False, num_augmentations=0)
+    X_test, Y_test = dict_to_tensors(test_persons_dict, max_positive_combinations=1, apply_augmentation=False, num_augmentations=0)
     
     train_dataset = SiameseDataset(X_train, Y_train)
     valid_dataset = SiameseDataset(X_valid, Y_valid)
@@ -883,7 +884,7 @@ def main(**kwargs):
         patience=hyperparameters['patience'],
         lr_scheduler=hyperparameters['lr_scheduler'],
         weight_decay=hyperparameters['weight_decay'],
-        optimizer_type=hyperparameters['optimizer_type'],
+        optimizer_type=hyperparameters['optimizer_type']
     )
     test_accuracy, class_report = evaluate_model(trained_model, test_loader, threshold=hyperparameters['threshold'], loss_function = hyperparameters['loss_function'])
     accuracy_table = PrettyTable()
@@ -901,8 +902,8 @@ def main(**kwargs):
     
     # Optionally display predictions
     if hyperparameters['display_predictions']:
-        display_predictions(trained_model, valid_loader, threshold=hyperparameters['threshold'], title=f"Predictions on Validation Set with '{hyperparameters['base_model']}' base")
-        display_predictions(trained_model, test_loader, threshold=hyperparameters['threshold'], title=f"Predictions on Test Set with '{hyperparameters['base_model']}' base")
+        display_predictions(trained_model, valid_loader, threshold=hyperparameters['threshold'], title=f"Predictions on Validation Set with '{hyperparameters['base_model']}' base", loss_function = hyperparameters['loss_function'])
+        display_predictions(trained_model, test_loader, threshold=hyperparameters['threshold'], title=f"Predictions on Test Set with '{hyperparameters['base_model']}' base", loss_function = hyperparameters['loss_function'])
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Training Siamese Network')
@@ -916,7 +917,7 @@ if __name__ == "__main__":
     parser.add_argument('--margin', type=float, default=1.0, help='Margin for contrastive loss.')
     parser.add_argument('--threshold', type=float, default=0.5, help='Threshold for similarity prediction.')
     parser.add_argument('--max_positive_combinations', type=int, default=1, help='Maximum number of positive combinations per person.')
-    parser.add_argument('--loss_function', type=str, default='BCE', choices=['BCE', 'hinge_loss','contrastive'], help='Loss function to use for training.')
+    parser.add_argument('--loss_function', type=str, default='contrastive', choices=['BCE', 'hinge_loss','contrastive'], help='Loss function to use for training.')
     parser.add_argument('--patience', type=int, default=0, help='Patience for early stopping.')
     parser.add_argument('--lr_scheduler', type=str, default=None, choices=[None, 'CosineAnnealingLR', 'ExponentialLR', 'ReduceLROnPlateau'], help='Learning rate scheduler.')
     parser.add_argument('--optimizer_type', type=str, default='Adam', choices=['Adam', 'Adagrad', 'RMSprop'], help='Optimizer type.')
