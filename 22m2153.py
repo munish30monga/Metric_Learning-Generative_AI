@@ -117,38 +117,6 @@ def visualize_pairs(X, Y):
     
     plt.tight_layout()
     plt.show()
-
-def visualize_batch(dataloader, num_samples=4):
-    # Fetch one batch of data
-    (img1_batch, img2_batch), labels_batch = next(iter(dataloader))
-    
-    # Randomly sample indices for visualization
-    indices = random.sample(range(len(labels_batch)), num_samples)
-    
-    fig, axes = plt.subplots(num_samples, 2, figsize=(12, 4 * num_samples))
-    
-    for i, idx in enumerate(indices):
-        # Image 1 from the pair
-        img1 = img1_batch[idx].permute(1, 2, 0).numpy()
-        # Image 2 from the pair
-        img2 = img2_batch[idx].permute(1, 2, 0).numpy()
-        
-        axes[i, 0].imshow(img1, cmap='gray')
-        axes[i, 0].axis('off')
-        
-        axes[i, 1].imshow(img2, cmap='gray')
-        axes[i, 1].axis('off')
-        
-        if labels_batch[idx] == 1.0:
-            label = "Positive Pair"
-        else:
-            label = "Negative Pair"
-        
-        # Place the label to the left of the images in vertical fashion
-        fig.text(0.1, (num_samples - i - 0.5) / num_samples, label, ha='center', va='center', fontsize=14, rotation=90)
-    
-    plt.tight_layout()
-    plt.show()
     
 def split_data(persons_dict):
     """
@@ -314,7 +282,7 @@ def preprocess_data(X):
     - X_processed (list): List of preprocessed image pairs.
     """
     transform = A.Compose([
-        A.CenterCrop(224, 224),
+        A.CenterCrop(128, 128),
         A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ToTensorV2()
     ])
@@ -389,6 +357,57 @@ class SiameseDataset(Dataset):
         img2 = self.X[index, 1]
         label = self.Y[index]
         return (img1, img2), label
+
+def denormalize(tensor, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
+    """
+    Denormalize a tensor.
+
+    Args:
+    - tensor (torch.Tensor): The normalized tensor.
+    - mean (list): The mean values used for normalization.
+    - std (list): The standard deviation values used for normalization.
+
+    Returns:
+    - torch.Tensor: The denormalized tensor.
+    """
+    mean = torch.tensor(mean).view(1, 3, 1, 1)
+    std = torch.tensor(std).view(1, 3, 1, 1)
+    return tensor * std + mean
+
+def visualize_batch(dataloader, num_samples=4):
+    # Fetch one batch of data
+    (img1_batch, img2_batch), labels_batch = next(iter(dataloader))
+    
+    # Denormalize the images
+    img1_batch = denormalize(img1_batch)
+    img2_batch = denormalize(img2_batch)
+    
+    # Randomly sample indices for visualization
+    indices = random.sample(range(len(labels_batch)), num_samples)
+    
+    fig, axes = plt.subplots(num_samples, 2, figsize=(6, 2 * num_samples))
+    
+    for i, idx in enumerate(indices):
+        img1 = np.clip(img1_batch[idx].permute(1, 2, 0).numpy(), 0, 1)
+        img2 = np.clip(img2_batch[idx].permute(1, 2, 0).numpy(), 0, 1)
+
+        
+        axes[i, 0].imshow(img1, cmap='gray')
+        axes[i, 0].axis('off')
+        
+        axes[i, 1].imshow(img2, cmap='gray')
+        axes[i, 1].axis('off')
+        
+        if labels_batch[idx] == 1.0:
+            label = "Positive Pair"
+        else:
+            label = "Negative Pair"
+        
+        # Place the label to the left of the images in vertical fashion
+        fig.text(0.1, (num_samples - i - 0.5) / num_samples, label, ha='center', va='center', fontsize=14, rotation=90)
+    
+    plt.tight_layout()
+    plt.show()
 class SiameseNetwork(nn.Module):
     """
     Siamese Neural Network for learning embeddings using pairs of images. 
@@ -783,8 +802,12 @@ def display_predictions(model, dataloader, threshold, title, loss_function):
             # Setting the title with predicted and actual labels
             pair_title = f"Predicted: {'Same Person' if predicted_labels[idx] == 1.0 else 'Different Person'} | Actual: {'Same Person' if actual_labels[idx] == 1.0 else 'Different Person'}"
             
+            # Denormalizing the images and ensure we're working with single images, not batches
+            img1 = denormalize(pairs[0][idx].unsqueeze(0)).squeeze(0).permute(1, 2, 0).numpy().clip(0, 1)
+            img2 = denormalize(pairs[1][idx].unsqueeze(0)).squeeze(0).permute(1, 2, 0).numpy().clip(0, 1)
+
             # Display the two images concatenated side by side
-            axes[count//2, count%2].imshow(torch.cat((pairs[0][idx].permute(1, 2, 0), pairs[1][idx].permute(1, 2, 0)), dim=1))
+            axes[count//2, count%2].imshow(np.concatenate((img1, img2), axis=1))
             
             # Setting the title with color based on match
             title_color = 'red' if predicted_labels[idx] != actual_labels[idx] else 'black'
@@ -811,8 +834,8 @@ def main(**kwargs):
     'base_model': 'resnet18',
     'margin': 1.0,
     'threshold': 0.5,
-    'max_positive_combinations': 30,
-    'loss_function': 'BCE',
+    'max_positive_combinations': 10,
+    'loss_function': 'contrastive',
     'patience': 0,
     'lr_scheduler': None, # 'CosineAnnealingLR', 'ExponentialLR', 'ReduceLROnPlateau'
     'optimizer_type': 'Adam', # 'Adam', 'Adagrad', 'RMSprop'
@@ -850,6 +873,17 @@ def main(**kwargs):
     X_valid_pairs, Y_valid_pairs, positive_pairs_count_valid, negative_pairs_count_valid = generate_pairs(valid_persons_dict, max_positive_combinations=1, apply_augmentation=False, num_augmentations=0)
     X_test_pairs, Y_test_pairs, positive_pairs_count_test, negative_pairs_count_test = generate_pairs(test_persons_dict, max_positive_combinations=1, apply_augmentation=False, num_augmentations=0)
 
+    if hyperparameters['print_tables']:
+        print(f"Toal number of persons: {len(all_persons)}")
+        print(f"Number of persons with more than one image: {len(persons_with_mul_imgs_dict)}")
+        table = PrettyTable()
+        table.field_names = ["Dataset Split", "Number of Persons", "Number of Positive Pairs", "Number of Negative Pairs"]
+        table.add_row(["Training Set", len(train_persons_dict), positive_pairs_count_train, negative_pairs_count_train])
+        table.add_row(["Validation Set", len(valid_persons_dict), positive_pairs_count_valid, negative_pairs_count_valid])
+        table.add_row(["Test Set", len(test_persons_dict), positive_pairs_count_test, negative_pairs_count_test])
+        print(table)
+        
+    print("Creating training, validation, and test datasets...")
     X_train, Y_train = dict_to_tensors(train_persons_dict, max_positive_combinations=hyperparameters['max_positive_combinations'], apply_augmentation=hyperparameters['apply_augmentation'], num_augmentations=hyperparameters['num_augmentations'])
     X_valid, Y_valid = dict_to_tensors(valid_persons_dict, max_positive_combinations=1, apply_augmentation=False, num_augmentations=0)
     X_test, Y_test = dict_to_tensors(test_persons_dict, max_positive_combinations=1, apply_augmentation=False, num_augmentations=0)
@@ -860,16 +894,6 @@ def main(**kwargs):
     train_loader = DataLoader(train_dataset, batch_size=hyperparameters['batch_size'], shuffle=True, num_workers=16, pin_memory=True)
     valid_loader = DataLoader(valid_dataset, batch_size=hyperparameters['batch_size'], shuffle=False, num_workers=16, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=hyperparameters['batch_size'], shuffle=False, num_workers=16, pin_memory=True)
-
-    if hyperparameters['print_tables']:
-        print(f"Toal number of persons: {len(all_persons)}")
-        print(f"Number of persons with more than one image: {len(persons_with_mul_imgs_dict)}")
-        table = PrettyTable()
-        table.field_names = ["Dataset Split", "Number of Persons", "Number of Positive Pairs", "Number of Negative Pairs"]
-        table.add_row(["Training Set", len(train_persons_dict), positive_pairs_count_train, negative_pairs_count_train])
-        table.add_row(["Validation Set", len(valid_persons_dict), positive_pairs_count_valid, negative_pairs_count_valid])
-        table.add_row(["Test Set", len(test_persons_dict), positive_pairs_count_test, negative_pairs_count_test])
-        print(table)
     
     if hyperparameters['visualize_pairs']:
         visualize_pairs(X_train_pairs, Y_train_pairs)  
@@ -918,12 +942,12 @@ if __name__ == "__main__":
     # Model Hyperparameters
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size for training and validation.')
     parser.add_argument('--random_seed', type=int, default=42, help='Random seed for reproducibility.')
-    parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs.')
+    parser.add_argument('--epochs', type=int, default=20, help='Number of training epochs.')
     parser.add_argument('--learning_rate', type=float, default=0.01, help='Learning rate for the optimizer.')
     parser.add_argument('--base_model', type=str, default='resnet18', help='Base model for Siamese Network.')
     parser.add_argument('--margin', type=float, default=1.0, help='Margin for contrastive loss.')
     parser.add_argument('--threshold', type=float, default=0.5, help='Threshold for similarity prediction.')
-    parser.add_argument('--max_positive_combinations', type=int, default=1, help='Maximum number of positive combinations per person.')
+    parser.add_argument('--max_positive_combinations', type=int, default=10, help='Maximum number of positive combinations per person.')
     parser.add_argument('--loss_function', type=str, default='contrastive', choices=['BCE', 'hinge_loss','contrastive'], help='Loss function to use for training.')
     parser.add_argument('--patience', type=int, default=0, help='Patience for early stopping.')
     parser.add_argument('--lr_scheduler', type=str, default=None, choices=[None, 'CosineAnnealingLR', 'ExponentialLR', 'ReduceLROnPlateau'], help='Learning rate scheduler.')
