@@ -302,10 +302,10 @@ def generate_pairs(persons_dict, max_positive_combinations, apply_augmentation, 
 
 
     return X, Y, positive_pairs_count, negative_pairs_count
-    
+
 def preprocess_data(X):
     """
-    Preprocess the images in X by applying a center crop.
+    Preprocess the images in X using albumentations by applying a center crop and normalization.
 
     Args:
     - X (list): List of image pairs.
@@ -313,11 +313,16 @@ def preprocess_data(X):
     Returns:
     - X_processed (list): List of preprocessed image pairs.
     """
-    crop = CenterCrop(224)      # Crop the center 224x224 pixels of the image    
+    transform = A.Compose([
+        A.CenterCrop(224, 224),
+        A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ToTensorV2()
+    ])
+    
     X_processed = []
 
     for pair in X:
-        processed_pair = [crop(Image.open(img_path)) for img_path in pair]
+        processed_pair = [transform(image=np.array(Image.open(img_path)))["image"] for img_path in pair]
         X_processed.append(processed_pair)
 
     return X_processed
@@ -333,24 +338,26 @@ def dict_to_tensors(persons_dict, max_positive_combinations, apply_augmentation,
     - X_tensor (torch.Tensor): Tensor of image pairs.
     - Y_tensor (torch.Tensor): Tensor of labels.
     """
-    X, Y,_,_ = generate_pairs(persons_dict, max_positive_combinations, apply_augmentation=apply_augmentation, num_augmentations=num_augmentations)
+    X, Y, _, _ = generate_pairs(persons_dict, max_positive_combinations, apply_augmentation=apply_augmentation, num_augmentations=num_augmentations)    
     
-    # Preprocess the data (apply center cropping)
+    # Preprocess the data (apply center cropping and normalization)
     X = preprocess_data(X)
-    
-    # Assuming all images have the same dimensions after cropping
+
+    # Assuming all images have the same dimensions after cropping and transformations
     first_image = X[0][0]
-    img_width, img_height = first_image.size
-    
+    _, img_height, img_width = first_image.size()
+
+    # Convert the images to tensors
     X_tensor = torch.empty((len(X), 2, 3, img_height, img_width))  # Shape: (num_pairs, 2, 3, img_height, img_width)
-
+    
     for i, (img1, img2) in enumerate(X):
-        X_tensor[i, 0] = transforms.ToTensor()(img1)  # Convert PIL image to tensor
-        X_tensor[i, 1] = transforms.ToTensor()(img2)
-
+        X_tensor[i, 0] = img1
+        X_tensor[i, 1] = img2
+    
     Y_tensor = torch.tensor(Y, dtype=torch.float32)
 
     return X_tensor, Y_tensor
+
 class SiameseDataset(Dataset):
     """
     Dataset class for Siamese networks.
@@ -746,7 +753,7 @@ def evaluate_model(model, dataloader, threshold, loss_function):
             all_labels.extend(labels.cpu().numpy())
     
     avg_accuracy = correct_predictions / total_samples
-    class_report = classification_report(all_labels, all_preds, target_names=["Dissimilar", "Similar"])
+    class_report = classification_report(all_labels, all_preds, target_names=["Negative Pair", "Positive Pair"])
     
     return avg_accuracy, class_report
 
@@ -898,7 +905,7 @@ def main(**kwargs):
     
     # Optionally plot losses
     if hyperparameters['plot_losses']:
-        plot_losses(train_losses, valid_losses, title=f"Training and Validation Losses with '{hyperparameters['base_model']}' base")
+        plot_losses(train_losses, valid_losses, train_accuracies, valid_accuracies)
     
     # Optionally display predictions
     if hyperparameters['display_predictions']:
