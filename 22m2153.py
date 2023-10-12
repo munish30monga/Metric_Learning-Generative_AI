@@ -545,7 +545,7 @@ def choose_lr_scheduler(lr_scheduler, optimizer, num_epochs):
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
         print("Using ExponentialLR scheduler...")
     elif lr_scheduler == "ReduceLROnPlateau":
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=2, verbose=True)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3, verbose=True)
         print("Using ReduceLROnPlateau scheduler...")
     else:
         scheduler = None
@@ -957,7 +957,7 @@ if __name__ == "__main__":
     parser.add_argument('--threshold', type=float, default=0.5, help='Threshold for similarity prediction.')
     parser.add_argument('--max_positive_combinations', type=int, default=10, help='Maximum number of positive combinations per person.')
     parser.add_argument('--loss_function', type=str, default='contrastive', choices=['BCE', 'hinge_loss','contrastive'], help='Loss function to use for training.')
-    parser.add_argument('--patience', type=int, default=5, help='Patience for early stopping.')
+    parser.add_argument('--patience', type=int, default=4, help='Patience for early stopping.')
     parser.add_argument('--lr_scheduler', type=str, default=None, choices=[None, 'CosineAnnealingLR', 'ExponentialLR', 'ReduceLROnPlateau'], help='Learning rate scheduler.')
     parser.add_argument('--optimizer_type', type=str, default='Adam', choices=['Adam', 'Adagrad', 'RMSprop'], help='Optimizer type.')
     parser.add_argument('--weight_decay', type=float, default=0, help='Weight decay for the optimizer.')
