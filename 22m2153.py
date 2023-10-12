@@ -846,7 +846,8 @@ def main(**kwargs):
     'print_tables': True,
     'plot_losses': True,
     'display_predictions': True,
-    'visualize_pairs': True
+    'visualize_pairs': True,
+    'save_best': False
     }
     hyperparameters.update(kwargs)
     print(f'{"#"*100}\nMetric Learning & Generative AI\n{"#"*100}')
@@ -927,6 +928,13 @@ def main(**kwargs):
     print(accuracy_table)
     print(f"Classification Report:\n{class_report}")
     
+    if hyperparameters['save_best']:
+        save_dir = pl.Path('./best_models/')
+        save_dir.mkdir(exist_ok=True)
+        best_model_name = f"Best_Model_val_acc_{np.mean(valid_accuracies)*100:.2f}_test_acc_{test_accuracy*100:.2f}.pth"
+        torch.save(trained_model.state_dict(), save_dir / best_model_name)
+        print(f"Saving best model to '{save_dir / best_model_name}'...")
+    
     # Optionally plot losses
     if hyperparameters['plot_losses']:
         plot_losses(train_losses, valid_losses, train_accuracies, valid_accuracies)
@@ -949,14 +957,15 @@ if __name__ == "__main__":
     parser.add_argument('--threshold', type=float, default=0.5, help='Threshold for similarity prediction.')
     parser.add_argument('--max_positive_combinations', type=int, default=10, help='Maximum number of positive combinations per person.')
     parser.add_argument('--loss_function', type=str, default='contrastive', choices=['BCE', 'hinge_loss','contrastive'], help='Loss function to use for training.')
-    parser.add_argument('--patience', type=int, default=0, help='Patience for early stopping.')
+    parser.add_argument('--patience', type=int, default=5, help='Patience for early stopping.')
     parser.add_argument('--lr_scheduler', type=str, default=None, choices=[None, 'CosineAnnealingLR', 'ExponentialLR', 'ReduceLROnPlateau'], help='Learning rate scheduler.')
     parser.add_argument('--optimizer_type', type=str, default='Adam', choices=['Adam', 'Adagrad', 'RMSprop'], help='Optimizer type.')
     parser.add_argument('--weight_decay', type=float, default=0, help='Weight decay for the optimizer.')
-    parser.add_argument('--apply_augmentation', type=bool, default=False, help='Whether to apply data augmentation or not.')
+    parser.add_argument('--apply_augmentation', type=bool, default=True, help='Whether to apply data augmentation or not.')
     parser.add_argument('--print_tables', type=bool, default=False, help='Flag to print tables.')
-    parser.add_argument('--num_augmentations', type=int, default=1, help='Number of augmented images to generate per image.')
-    parser.add_argument('--unfreeze_last_n', type=int, default=0, help='Number of layers to unfreeze from the end.')
+    parser.add_argument('--num_augmentations', type=int, default=4, help='Number of augmented images to generate per image.')
+    parser.add_argument('--unfreeze_last_n', type=int, default=4, help='Number of layers to unfreeze from the end.')
+    parser.add_argument('--save_best', type=bool, default=True, help='Flag to save best model.')
     
     # Visualization arguments
     parser.add_argument('--plot_losses', type=bool, default=False, help='Flag to plot training and validation losses.')
