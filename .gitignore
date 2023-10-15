@@ -167,3 +167,4 @@ augmented_dataset
 # GANs
 generated_images
 best_models
+real_images
