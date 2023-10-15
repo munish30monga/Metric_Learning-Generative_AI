@@ -1038,8 +1038,9 @@ def train_WGAN(generator, discriminator, train_loader, num_epochs, folder_name, 
         running_loss_d = 0.0
         running_real_score = 0.0
         running_fake_score = 0.0
+        pbar = tqdm(train_loader, total=len(train_loader), leave=False)
         
-        for real_images in train_loader:
+        for real_images in pbar:
             real_images = real_images.to(device)
             batch_size = real_images.size(0)
             
@@ -1070,6 +1071,9 @@ def train_WGAN(generator, discriminator, train_loader, num_epochs, folder_name, 
             running_real_score += critic_real.mean().item()
             running_fake_score += critic_fake.mean().item()
 
+            # Update tqdm
+            pbar.set_postfix(gen_loss=loss_g.item(), disc_loss=loss_d.item())  
+            
         # Learning Rate Scheduling
         if scheduler_g:
             if isinstance(scheduler_g, torch.optim.lr_scheduler.ReduceLROnPlateau):
@@ -1135,17 +1139,7 @@ def plot_GAN_loss(losses_g, losses_d, real_scores, fake_scores):
 
     plt.tight_layout()
     plt.show()
-
-def display_side_by_side(*images):
-    """
-    Utility function to display images side by side.
-    """
-    html_str = ""
-    for img in images:
-        html_str += f"<img style='width: 500px; margin: 0px; float: left; border: 1px solid black;' src='{img.filename}' />"
     
-    display(HTML(html_str))
-
 def visualize_GAN_results(num_epochs, every_n_epochs, folder_name):
     gen_imgs_dir = pl.Path(f'./generated_images/{folder_name}')
     images_to_display = []
@@ -1168,10 +1162,6 @@ def visualize_GAN_results(num_epochs, every_n_epochs, folder_name):
     
     plt.tight_layout()
     plt.show()
-    
-    # Displaying the GIF
-    gif_path = gen_imgs_dir / "generated_images.gif"
-    display_side_by_side(IPImage(filename=gif_path))
     
 class cGAN_Generator(nn.Module):
     def __init__(self, channels_noise, channels_img, features_g, condition_dim):
@@ -1334,8 +1324,8 @@ def train_cGAN(generator, discriminator, siamese_net, train_loader, num_epochs, 
         running_loss_d = 0.0
         running_real_score = 0.0
         running_fake_score = 0.0
-        
-        for real_images in train_loader:
+        pbar = tqdm(train_loader, total=len(train_loader), leave=False)
+        for real_images in pbar:
             real_images = real_images.to(device)
             batch_size = real_images.size(0)
 
@@ -1374,6 +1364,7 @@ def train_cGAN(generator, discriminator, siamese_net, train_loader, num_epochs, 
             running_loss_d += loss_d.item()
             running_real_score += critic_real.mean().item()
             running_fake_score += critic_fake.mean().item()
+            pbar.set_postfix(gen_loss=loss_g.item(), disc_loss=loss_d.item())
                   
         # Learning Rate Scheduling
         if scheduler_g:
@@ -1436,9 +1427,6 @@ def visualize_cGAN_results(num_epochs, every_n_epochs, folder_name):
     
     plt.tight_layout()
     plt.show()
-
-    # Displaying the GIFs
-    display_side_by_side(IPImage(filename=gen_imgs_dir / "fake_images.gif"), IPImage(filename=gen_imgs_dir / "real_images.gif"))
         
 def main(**kwargs):
     hyperparameters = {
