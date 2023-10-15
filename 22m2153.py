@@ -34,7 +34,7 @@ from torchvision.utils import save_image                            # for saving
 from IPython.display import Image as IPImage, HTML                  # for displaying images
 
 # SET CUDA DEVICE
-os.environ['CUDA_VISIBLE_DEVICES'] = '4' 
+os.environ['CUDA_VISIBLE_DEVICES'] = '3' 
 device = 'cuda' if torch.cuda.is_available() else 'cpu' 
 
 def visualize_pairs(X, Y):
