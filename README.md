@@ -4,8 +4,7 @@
 
 > Training a generative model for generating face images, using a GAN.
 
-![Fake_Images.gif](./fake_images.gif)
-![Real_Images.gif](./real_images.gif)
+![Generated_Images.gif](./generated_images.gif)
 ### Instructions:
 1. Clone the repository using:
     ```bash
